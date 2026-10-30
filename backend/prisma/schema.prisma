@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  LEARNER
+  TUTOR
+  ADMIN
+}
+
+enum SlotStatus {
+  FREE
+  BOOKED
+}
+
+enum SlotMode {
+  ONLINE
+  IN_PERSON
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         Role      @default(LEARNER)
+  verified     Boolean   @default(false)
+  suspended    Boolean   @default(false)
+  subjects     String[]
+  bio          String?
+  slots        Slot[]
+  bookings     Booking[]
+}
+
+model Slot {
+  id        String     @id @default(uuid())
+  tutorId   String
+  tutor     User       @relation(fields: [tutorId], references: [id])
+  subject   String
+  startUtc  DateTime
+  endUtc    DateTime
+  mode      SlotMode
+  link      String?
+  status    SlotStatus @default(FREE)
+  bookings  Booking[]
+
+  @@index([tutorId, startUtc])
+  @@index([subject, startUtc])
+}
+
+model Booking {
+  id        String        @id @default(uuid())
+  slotId    String
+  slot      Slot          @relation(fields: [slotId], references: [id])
+  learnerId String
+  learner   User          @relation(fields: [learnerId], references: [id])
+  status    BookingStatus @default(CONFIRMED)
+  note      String?
+  createdAt DateTime      @default(now())
+  review    Review?
+
+  @@index([slotId])
+  @@index([learnerId])
+}
+
+model Review {
+  id        String  @id @default(uuid())
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id])
+  rating    Int
+  comment   String?
+}
+
+model EmailLog {
+  id        String @id @default(uuid())
+  bookingId String
+  type      String
+  status    String
+  attempts  Int    @default(0)
+}
