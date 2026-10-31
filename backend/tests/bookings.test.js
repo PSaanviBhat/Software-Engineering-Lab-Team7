@@ -37,6 +37,9 @@ async function makeSlot(tutorId, startOffsetHours = 48, durationHours = 1) {
   });
 }
 
+const cancel = (user, bookingId) =>
+  request(app).delete(`/api/bookings/${bookingId}`).set("Authorization", `Bearer ${tokenFor(user)}`);
+
 const book = (user, slotId) =>
   request(app).post("/api/bookings").set("Authorization", `Bearer ${tokenFor(user)}`).send({ slotId });
 
@@ -221,3 +224,96 @@ describe("POST /api/bookings concurrency and overlap", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   });
 });
+
+describe("DELETE /api/bookings/:id", () => {
+  async function bookedIn(hours) {
+    const tutor = await makeUser("TUTOR");
+    const learner = await makeUser();
+    const slot = await makeSlot(tutor.id, hours);
+    const res = await book(learner, slot.id);
+    return { tutor, learner, slot, bookingId: res.body.bookingId };
+  }
+
+  it("TC-BOOK-05: cancelling 3 h before start succeeds and frees the slot", async () => {
+    const { learner, slot, bookingId } = await bookedIn(3);
+
+    const res = await cancel(learner, bookingId);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("CANCELLED");
+    expect((await prisma.slot.findUnique({ where: { id: slot.id } })).status).toBe("FREE");
+    expect((await prisma.booking.findUnique({ where: { id: bookingId } })).status).toBe("CANCELLED");
+
+    const another = await makeUser();
+    expect((await book(another, slot.id)).status).toBe(201);
+  });
+
+  it("TC-BOOK-05: cancelling 1 h before start returns 409 TOO_LATE_TO_CANCEL", async () => {
+    const { learner, slot, bookingId } = await bookedIn(1);
+
+    const res = await cancel(learner, bookingId);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("TOO_LATE_TO_CANCEL");
+    expect((await prisma.slot.findUnique({ where: { id: slot.id } })).status).toBe("BOOKED");
+    expect((await prisma.booking.findUnique({ where: { id: bookingId } })).status).toBe("CONFIRMED");
+  });
+
+  it("TC-BOOK-05: another learner cancelling returns 403", async () => {
+    const { bookingId } = await bookedIn(3);
+    const stranger = await makeUser();
+
+    const res = await cancel(stranger, bookingId);
+
+    expect(res.status).toBe(403);
+    expect((await prisma.booking.findUnique({ where: { id: bookingId } })).status).toBe("CONFIRMED");
+  });
+
+  it("returns 404 for an unknown booking and 400 for a malformed id", async () => {
+    const learner = await makeUser();
+    expect((await cancel(learner, "00000000-0000-4000-8000-000000000000")).status).toBe(404);
+    expect((await cancel(learner, "nope")).status).toBe(400);
+  });
+
+  it("returns 409 ALREADY_CANCELLED when cancelling twice", async () => {
+    const { learner, bookingId } = await bookedIn(3);
+    await cancel(learner, bookingId);
+
+    const res = await cancel(learner, bookingId);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("ALREADY_CANCELLED");
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app).delete("/api/bookings/00000000-0000-4000-8000-000000000000");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /api/bookings/me", () => {
+  it("returns only my bookings, upcoming first", async () => {
+    const tutor = await makeUser("TUTOR");
+    const learner = await makeUser();
+    const other = await makeUser();
+    const later = await makeSlot(tutor.id, 100);
+    const sooner = await makeSlot(tutor.id, 30);
+    const notMine = await makeSlot(tutor.id, 10);
+    await book(learner, later.id);
+    await book(learner, sooner.id);
+    await book(other, notMine.id);
+
+    const res = await request(app)
+      .get("/api/bookings/me")
+      .set("Authorization", `Bearer ${tokenFor(learner)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((b) => b.slotId)).toEqual([sooner.id, later.id]);
+    expect(res.body[0]).toMatchObject({ status: "CONFIRMED", subject: "DBMS", tutorId: tutor.id });
+  });
+
+  it("returns 401 without a token", async () => {
+    expect((await request(app).get("/api/bookings/me")).status).toBe(401);
+  });
+});
+

@@ -2,6 +2,7 @@ const prisma = require("../lib/prisma");
 const AppError = require("../lib/AppError");
 
 const TX_OPTIONS = { maxWait: 10000, timeout: 10000 };
+const CANCEL_CUTOFF_MS = 2 * 60 * 60 * 1000;
 
 async function createBooking({ learnerId, slotId, note }) {
   try {
@@ -60,4 +61,63 @@ async function createBooking({ learnerId, slotId, note }) {
   }
 }
 
-module.exports = { createBooking };
+async function listMyBookings(learnerId) {
+  const bookings = await prisma.booking.findMany({
+    where: { learnerId },
+    include: { slot: { include: { tutor: { select: { id: true, name: true } } } } },
+  });
+
+  const now = new Date();
+  const dtos = bookings.map((b) => ({
+    bookingId: b.id,
+    slotId: b.slotId,
+    start: b.slot.startUtc.toISOString(),
+    end: b.slot.endUtc.toISOString(),
+    status: b.status,
+    note: b.note,
+    subject: b.slot.subject,
+    mode: b.slot.mode,
+    link: b.slot.link,
+    tutorId: b.slot.tutor.id,
+    tutorName: b.slot.tutor.name,
+  }));
+
+  // Upcoming first (soonest first), then past ones (most recent first).
+  const isUpcoming = (d) => new Date(d.end) > now;
+  const upcoming = dtos.filter(isUpcoming).sort((a, b) => a.start.localeCompare(b.start));
+  const past = dtos.filter((d) => !isUpcoming(d)).sort((a, b) => b.start.localeCompare(a.start));
+  return [...upcoming, ...past];
+}
+
+async function cancelBooking({ learnerId, bookingId }) {
+  return prisma.$transaction(async (tx) => {
+    const found = await tx.booking.findUnique({ where: { id: bookingId } });
+    if (!found) throw new AppError(404, "BOOKING_NOT_FOUND", "Booking not found");
+    if (found.learnerId !== learnerId) {
+      throw new AppError(403, "FORBIDDEN", "You can only cancel your own bookings");
+    }
+
+    // Same lock as createBooking, so cancelling and re-booking the slot cannot interleave.
+    const slots = await tx.$queryRaw`SELECT * FROM "Slot" WHERE id = ${found.slotId} FOR UPDATE`;
+    const slot = slots[0];
+
+    const booking = await tx.booking.findUnique({ where: { id: bookingId } });
+    if (booking.status !== "CONFIRMED") {
+      throw new AppError(409, "ALREADY_CANCELLED", "Booking is already cancelled");
+    }
+    if (slot.startUtc.getTime() - Date.now() < CANCEL_CUTOFF_MS) {
+      throw new AppError(
+        409,
+        "TOO_LATE_TO_CANCEL",
+        "Bookings cannot be cancelled less than 2 hours before the start"
+      );
+    }
+
+    await tx.booking.update({ where: { id: bookingId }, data: { status: "CANCELLED" } });
+    await tx.slot.update({ where: { id: slot.id }, data: { status: "FREE" } });
+
+    return { ok: true, bookingId, slotId: slot.id, status: "CANCELLED" };
+  }, TX_OPTIONS);
+}
+
+module.exports = { createBooking, listMyBookings, cancelBooking };

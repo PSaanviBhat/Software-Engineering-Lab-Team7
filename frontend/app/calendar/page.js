@@ -9,6 +9,12 @@ import timeGridPlugin from "@fullcalendar/timegrid";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api";
 const emptyFilters = { subject: "", tutorId: "", mode: "" };
+const bookingErrors = {
+  SLOT_TAKEN: "Sorry, someone else just booked this slot. Please pick another one.",
+  LEARNER_OVERLAP: "You already have a booking that overlaps this time.",
+  OWN_SLOT: "You cannot book your own slot.",
+  SLOT_IN_PAST: "This slot has already started.",
+};
 
 export default function CalendarPage() {
   const calendarRef = useRef(null);
@@ -19,6 +25,10 @@ export default function CalendarPage() {
   const [tutors, setTutors] = useState([]);
   const [events, setEvents] = useState([]);
   const [errorMessage, setErrorMessage] = useState("");
+  const [selectedSlot, setSelectedSlot] = useState(null);
+  const [bookingError, setBookingError] = useState("");
+  const [bookingNotice, setBookingNotice] = useState("");
+  const [isBooking, setIsBooking] = useState(false);
 
   // Loads slots for the visible date range, applying the current filters.
   const fetchSlots = useCallback(async () => {
@@ -53,6 +63,12 @@ export default function CalendarPage() {
           title: `${slot.subject}${slot.tutorName ? " - " + slot.tutorName : ""}`,
           start: slot.start,
           end: slot.end,
+          extendedProps: {
+            subject: slot.subject,
+            tutorName: slot.tutorName,
+            mode: slot.mode,
+            status: slot.status,
+          },
           backgroundColor: slot.status === "FREE" ? "#16a34a" : "#9ca3af",
           borderColor: slot.status === "FREE" ? "#16a34a" : "#9ca3af",
         }))
@@ -97,6 +113,45 @@ export default function CalendarPage() {
     setFilters((prev) => ({ ...prev, [name]: value }));
   };
 
+  const handleEventClick = (info) => {
+    setBookingError("");
+    setSelectedSlot({
+      id: info.event.id,
+      start: info.event.start,
+      end: info.event.end,
+      ...info.event.extendedProps,
+    });
+  };
+
+  const handleBook = async () => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setBookingError("Please sign in to book a slot.");
+      return;
+    }
+
+    setIsBooking(true);
+    setBookingError("");
+    try {
+      await axios.post(
+        `${apiUrl}/bookings`,
+        { slotId: selectedSlot.id },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setSelectedSlot(null);
+      setBookingNotice("Slot booked! You can see it under My bookings.");
+      fetchSlots();
+    } catch (err) {
+      const code = err.response?.data?.error;
+      setBookingError(
+        bookingErrors[code] || err.response?.data?.message || "Could not book this slot."
+      );
+      if (code === "SLOT_TAKEN") fetchSlots();
+    } finally {
+      setIsBooking(false);
+    }
+  };
+
   const handleJumpToDate = (e) => {
     if (e.target.value && calendarRef.current) {
       calendarRef.current.getApi().gotoDate(e.target.value);
@@ -112,10 +167,24 @@ export default function CalendarPage() {
       <div className="max-w-6xl mx-auto bg-white text-gray-900 p-6 rounded-xl shadow-md border border-gray-200">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl font-extrabold text-gray-900">Tutoring Calendar</h1>
-          <Link href="/" className="text-sm font-medium text-blue-600 hover:text-blue-500">
-            Home
-          </Link>
+          <div className="flex gap-4">
+            <Link href="/my-bookings" className="text-sm font-medium text-blue-600 hover:text-blue-500">
+              My bookings
+            </Link>
+            <Link href="/" className="text-sm font-medium text-blue-600 hover:text-blue-500">
+              Home
+            </Link>
+          </div>
         </div>
+
+        {bookingNotice && (
+          <div
+            role="status"
+            className="rounded-md bg-green-50 p-4 mb-4 border border-green-200 text-sm text-green-700"
+          >
+            {bookingNotice}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
           <div>
@@ -231,11 +300,58 @@ export default function CalendarPage() {
           }}
           buttonText={{ today: "Today", month: "Month", week: "Week", day: "Day" }}
           events={events}
+          eventClick={handleEventClick}
           datesSet={handleDatesSet}
           height="auto"
           nowIndicator={true}
         />
       </div>
+
+      {selectedSlot && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+        >
+          <div className="w-full max-w-md rounded-xl bg-white p-6 text-gray-900 shadow-lg">
+            <h2 className="text-xl font-bold">{selectedSlot.subject}</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              {selectedSlot.tutorName} · {selectedSlot.mode === "ONLINE" ? "Online" : "In person"}
+            </p>
+            <p className="mt-3 text-sm">
+              {selectedSlot.start.toLocaleString()} – {selectedSlot.end.toLocaleTimeString()}
+            </p>
+
+            {bookingError && (
+              <p role="alert" className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">
+                {bookingError}
+              </p>
+            )}
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedSlot(null)}
+                className="py-2 px-4 text-sm font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+              >
+                Close
+              </button>
+              {selectedSlot.status === "FREE" ? (
+                <button
+                  type="button"
+                  onClick={handleBook}
+                  disabled={isBooking}
+                  className="py-2 px-4 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {isBooking ? "Booking..." : "Book"}
+                </button>
+              ) : (
+                <span className="py-2 text-sm text-gray-500">Already booked</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
