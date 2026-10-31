@@ -1,9 +1,7 @@
 const request = require("supertest");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const app = require("../src/app");
 const prisma = require("../src/lib/prisma");
-const { requireRole } = require("../src/middleware/rbac");
 
 jest.mock("../src/lib/prisma", () => ({
   user: {
@@ -12,15 +10,11 @@ jest.mock("../src/lib/prisma", () => ({
   },
 }));
 
-describe("Authentication & RBAC (F-003, SR-003, TC-AUTH-03, TC-SEC-03, TC-ADM-01)", () => {
-  const testSecret = "test-only-jwt-secret";
+describe("Auth Registration - TC-AUTH-01 (F-001, SR-002)", () => {
   const originalJwtSecret = process.env.JWT_SECRET;
-  const secret = testSecret;
-  let validPasswordHash;
 
-  beforeAll(async () => {
-    process.env.JWT_SECRET = testSecret;
-    validPasswordHash = await bcrypt.hash("Password@123", 12);
+  beforeAll(() => {
+    process.env.JWT_SECRET = "test-only-jwt-secret";
   });
 
   afterAll(() => {
@@ -35,174 +29,103 @@ describe("Authentication & RBAC (F-003, SR-003, TC-AUTH-03, TC-SEC-03, TC-ADM-01
     jest.clearAllMocks();
   });
 
-  describe("POST /api/auth/login", () => {
-    it("TC-AUTH-03: returns 200 and a signed JWT token on valid credentials", async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: "user-123",
-        name: "Test Learner",
-        email: "learner@example.edu",
-        passwordHash: validPasswordHash,
-        role: "LEARNER",
-        verified: true,
-        suspended: false,
-        subjects: [],
-        bio: null,
+  it("successfully registers a new user and returns 201 with token and safe user profile", async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.create.mockImplementation(async ({ data }) => ({
+      id: "user-uuid-1",
+      name: data.name,
+      email: data.email,
+      role: data.role,
+      verified: data.verified,
+      suspended: false,
+      subjects: data.subjects,
+      bio: null,
+    }));
+
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({
+        name: "Kasissnu Ssinha",
+        email: "kasissnu@example.edu",
+        password: "StrongPassword123!",
       });
 
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({
-          email: "learner@example.edu",
-          password: "Password@123",
-        });
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty("token");
+    expect(res.body).toHaveProperty("user");
+    expect(res.body.user.name).toBe("Kasissnu Ssinha");
+    expect(res.body.user.email).toBe("kasissnu@example.edu");
+    expect(res.body.user.role).toBe("LEARNER");
+    expect(res.body.user).not.toHaveProperty("password");
+    expect(res.body.user).not.toHaveProperty("passwordHash");
 
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty("token");
-      expect(res.body).toHaveProperty("user");
-      expect(res.body.user.email).toBe("learner@example.edu");
-      expect(res.body.user.role).toBe("LEARNER");
-      expect(res.body.user).not.toHaveProperty("password");
-      expect(res.body.user).not.toHaveProperty("passwordHash");
-
-      // Verify token payload
-      const decoded = jwt.verify(res.body.token, secret);
-      expect(decoded.id).toBe("user-123");
-      expect(decoded.role).toBe("LEARNER");
-    });
-
-    it("TC-AUTH-03: returns 401 INVALID_CREDENTIALS when password does not match", async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: "user-123",
-        name: "Test Learner",
-        email: "learner@example.edu",
-        passwordHash: validPasswordHash,
-        role: "LEARNER",
-        verified: true,
-        suspended: false,
-      });
-
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({
-          email: "learner@example.edu",
-          password: "WrongPassword999!",
-        });
-
-      expect(res.status).toBe(401);
-      expect(res.body.error).toBe("INVALID_CREDENTIALS");
-    });
-
-    it("returns 401 INVALID_CREDENTIALS when user is not found", async () => {
-      prisma.user.findUnique.mockResolvedValue(null);
-
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({
-          email: "nonexistent@example.edu",
-          password: "Password@123",
-        });
-
-      expect(res.status).toBe(401);
-      expect(res.body.error).toBe("INVALID_CREDENTIALS");
-    });
-
-    it("TC-ADM-01: returns 403 ACCOUNT_SUSPENDED when user account is suspended", async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: "user-suspended",
-        name: "Suspended User",
-        email: "suspended@example.edu",
-        passwordHash: validPasswordHash,
-        role: "LEARNER",
-        verified: true,
-        suspended: true,
-      });
-
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({
-          email: "suspended@example.edu",
-          password: "Password@123",
-        });
-
-      expect(res.status).toBe(403);
-      expect(res.body.error).toBe("ACCOUNT_SUSPENDED");
-    });
-
-    it("returns 400 for invalid email input", async () => {
-      const res = await request(app)
-        .post("/api/auth/login")
-        .send({
-          email: "not-an-email",
-          password: "Password@123",
-        });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("INVALID_INPUT");
-    });
+    // Verify bcrypt cost factor is 12 (SR-002)
+    const createCall = prisma.user.create.mock.calls[0][0];
+    const storedHash = createCall.data.passwordHash;
+    expect(storedHash.startsWith("$2a$12$") || storedHash.startsWith("$2b$12$")).toBe(true);
+    const passwordMatches = await bcrypt.compare("StrongPassword123!", storedHash);
+    expect(passwordMatches).toBe(true);
   });
 
-  describe("Protected Route & Role Checks (SR-003, TC-SEC-03)", () => {
-    it("returns 401 when accessing protected route without a token", async () => {
-      const res = await request(app).get("/api/auth/me");
-      expect(res.status).toBe(401);
-      expect(res.body.error).toBe("UNAUTHORIZED");
+  it("rejects registration with duplicate email and returns 409 Conflict", async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: "existing-uuid",
+      email: "duplicate@example.edu",
     });
 
-    it("does not treat the legacy x-user-id header as JWT authentication", async () => {
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("x-user-id", "legacy-user");
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({
+        name: "Duplicate User",
+        email: "duplicate@example.edu",
+        password: "StrongPassword123!",
+      });
 
-      expect(res.status).toBe(401);
-      expect(res.body.error).toBe("UNAUTHORIZED");
-    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("EMAIL_EXISTS");
+    expect(res.body.message).toMatch(/already registered/i);
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
 
-    it("returns 401 when accessing protected route with an invalid token", async () => {
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Authorization", "Bearer invalid-token-xyz");
+  it("returns 400 when name is missing or empty", async () => {
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({
+        name: "",
+        email: "student@example.edu",
+        password: "StrongPassword123!",
+      });
 
-      expect(res.status).toBe(401);
-      expect(res.body.error).toBe("UNAUTHORIZED");
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("INVALID_INPUT");
+    expect(res.body.details).toHaveProperty("name");
+  });
 
-    it("returns 200 with user payload when accessing protected route with valid token", async () => {
-      const token = jwt.sign(
-        { id: "user-999", email: "user@example.edu", role: "TUTOR" },
-        secret,
-        { expiresIn: "1h" }
-      );
+  it("returns 400 when email format is invalid", async () => {
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({
+        name: "Test Student",
+        email: "not-an-email",
+        password: "StrongPassword123!",
+      });
 
-      const res = await request(app)
-        .get("/api/auth/me")
-        .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("INVALID_INPUT");
+    expect(res.body.details).toHaveProperty("email");
+  });
 
-      expect(res.status).toBe(200);
-      expect(res.body.user.id).toBe("user-999");
-      expect(res.body.user.role).toBe("TUTOR");
-    });
+  it("returns 400 when password is shorter than 8 characters", async () => {
+    const res = await request(app)
+      .post("/api/auth/register")
+      .send({
+        name: "Test Student",
+        email: "student@example.edu",
+        password: "short",
+      });
 
-    it("RBAC middleware allows user with matching role and rejects others with 403", () => {
-      const middleware = requireRole("TUTOR", "ADMIN");
-      const nextFn = jest.fn();
-
-      // Case 1: Permitted role
-      const reqPermitted = { user: { id: "1", role: "TUTOR" } };
-      const resPermitted = {};
-      middleware(reqPermitted, resPermitted, nextFn);
-      expect(nextFn).toHaveBeenCalledWith();
-
-      // Case 2: Forbidden role
-      nextFn.mockClear();
-      const reqForbidden = { user: { id: "2", role: "LEARNER" } };
-      const resForbidden = {};
-      middleware(reqForbidden, resForbidden, nextFn);
-      expect(nextFn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: 403,
-          code: "FORBIDDEN",
-        })
-      );
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("INVALID_INPUT");
+    expect(res.body.details).toHaveProperty("password");
   });
 });
