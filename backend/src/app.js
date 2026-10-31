@@ -25,6 +25,7 @@ app.use((err, req, res, next) => {
     error: err.code || "INTERNAL_ERROR",
     message: err.message || "Something went wrong",
     details: err.details || {},
+    ...err.extra,
   });
 });
 
