@@ -15,6 +15,14 @@ const registerSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
+const tutorProfileSchema = z.object({
+  subjects: z
+    .array(z.string().trim().min(1, "Subject cannot be empty").max(100, "Subject is too long"))
+    .min(1, "At least one subject is required")
+    .max(10, "A tutor can list at most 10 subjects"),
+  bio: z.string().trim().min(1, "Bio cannot be empty").max(500, "Bio is too long"),
+});
+
 function signToken(user) {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is not configured");
@@ -112,11 +120,38 @@ async function register(input) {
   };
 }
 
+async function updateTutorProfile(userId, input) {
+  const parseResult = tutorProfileSchema.safeParse(input);
+  if (!parseResult.success) {
+    throw new AppError(400, "INVALID_INPUT", "Invalid tutor profile input", {
+      fields: parseResult.error.flatten().fieldErrors,
+    });
+  }
+
+  const subjects = [...new Set(parseResult.data.subjects.map((subject) => subject.trim()))];
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      role: "TUTOR",
+      subjects,
+      bio: parseResult.data.bio.trim(),
+    },
+  });
+
+  const sanitizedUser = sanitizeUser(user);
+  return {
+    token: signToken(user),
+    user: sanitizedUser,
+  };
+}
+
 module.exports = {
   loginSchema,
   registerSchema,
   login,
   register,
+  tutorProfileSchema,
+  updateTutorProfile,
   signToken,
   sanitizeUser,
 };
