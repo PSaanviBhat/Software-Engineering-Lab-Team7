@@ -23,6 +23,15 @@ router.post("/register", async (req, res, next) => {
   }
 });
 
+router.put("/tutor-profile", auth, async (req, res, next) => {
+  try {
+    const result = await authService.updateTutorProfile(req.user.id, req.body);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/me", auth, (req, res) => {
   res.json({ user: req.user });
 });

@@ -24,6 +24,12 @@ export default function Home() {
           >
             Sign In
           </Link>
+          <Link
+            href="/tutor-profile"
+            className="inline-flex items-center justify-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-sm"
+          >
+            Become a Tutor
+          </Link>
         </div>
       </div>
     </main>
