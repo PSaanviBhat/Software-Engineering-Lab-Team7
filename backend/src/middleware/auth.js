@@ -10,21 +10,18 @@ function auth(req, res, next) {
   }
 
   if (!token) {
-    // Check fallback x-user-id for legacy tests or dev headers
-    const fallbackId = req.header("x-user-id");
-    if (fallbackId) {
-      req.user = { id: fallbackId, role: "LEARNER" };
-      return next();
-    }
     return next(new AppError(401, "UNAUTHORIZED", "Missing authentication token"));
   }
 
   try {
-    const secret = process.env.JWT_SECRET || "default_jwt_secret";
-    const decoded = jwt.verify(token, secret);
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET is not configured");
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     next();
-  } catch (error) {
+  } catch {
     return next(new AppError(401, "UNAUTHORIZED", "Invalid or expired token"));
   }
 }

@@ -13,11 +13,22 @@ jest.mock("../src/lib/prisma", () => ({
 }));
 
 describe("Authentication & RBAC (F-003, SR-003, TC-AUTH-03, TC-SEC-03, TC-ADM-01)", () => {
-  const secret = process.env.JWT_SECRET || "default_jwt_secret";
+  const testSecret = "test-only-jwt-secret";
+  const originalJwtSecret = process.env.JWT_SECRET;
+  const secret = testSecret;
   let validPasswordHash;
 
   beforeAll(async () => {
+    process.env.JWT_SECRET = testSecret;
     validPasswordHash = await bcrypt.hash("Password@123", 12);
+  });
+
+  afterAll(() => {
+    if (originalJwtSecret === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = originalJwtSecret;
+    }
   });
 
   beforeEach(() => {
@@ -133,6 +144,15 @@ describe("Authentication & RBAC (F-003, SR-003, TC-AUTH-03, TC-SEC-03, TC-ADM-01
   describe("Protected Route & Role Checks (SR-003, TC-SEC-03)", () => {
     it("returns 401 when accessing protected route without a token", async () => {
       const res = await request(app).get("/api/auth/me");
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe("UNAUTHORIZED");
+    });
+
+    it("does not treat the legacy x-user-id header as JWT authentication", async () => {
+      const res = await request(app)
+        .get("/api/auth/me")
+        .set("x-user-id", "legacy-user");
+
       expect(res.status).toBe(401);
       expect(res.body.error).toBe("UNAUTHORIZED");
     });

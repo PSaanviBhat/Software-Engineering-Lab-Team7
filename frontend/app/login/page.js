@@ -38,8 +38,8 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      const response = await axios.post(`${apiUrl}/api/auth/login`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api";
+      const response = await axios.post(`${apiUrl}/auth/login`, {
         email: formData.email.trim().toLowerCase(),
         password: formData.password,
       });
