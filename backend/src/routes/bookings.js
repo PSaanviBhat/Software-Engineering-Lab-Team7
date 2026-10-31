@@ -23,4 +23,19 @@ router.post("/", auth, async (req, res) => {
   res.status(201).json(result);
 });
 
+router.get("/me", auth, async (req, res) => {
+  res.json(await bookingService.listMyBookings(req.user.id));
+});
+
+router.delete("/:id", auth, async (req, res) => {
+  const parsed = z.uuid().safeParse(req.params.id);
+  if (!parsed.success) throw new AppError(400, "INVALID_INPUT", "Invalid booking id");
+
+  const result = await bookingService.cancelBooking({
+    learnerId: req.user.id,
+    bookingId: parsed.data,
+  });
+  res.json(result);
+});
+
 module.exports = router;
