@@ -1,6 +1,6 @@
 const express = require("express");
 const { z } = require("zod");
-const tempAuth = require("../middleware/tempAuth");
+const auth = require("../middleware/auth");
 const AppError = require("../lib/AppError");
 const bookingService = require("../services/bookingService");
 
@@ -11,7 +11,7 @@ const createSchema = z.object({
   note: z.string().max(500).optional(),
 });
 
-router.post("/", tempAuth, async (req, res) => {
+router.post("/", auth, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) throw new AppError(400, "INVALID_INPUT", "Invalid booking request");
 
