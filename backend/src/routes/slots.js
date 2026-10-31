@@ -4,6 +4,7 @@ const auth = require("../middleware/auth");
 const { requireRole } = require("../middleware/rbac");
 const AppError = require("../lib/AppError");
 const slotService = require("../services/slotService");
+const slotQueryService = require("../services/slotQueryService");
 
 const router = express.Router();
 
@@ -13,6 +14,26 @@ const createSchema = z.object({
   end: z.iso.datetime({ offset: true }),
   mode: z.enum(["ONLINE", "IN_PERSON"]),
   link: z.string().trim().max(500).optional(),
+});
+
+const listSchema = z.object({
+  from: z.iso.datetime({ offset: true }).optional(),
+  to: z.iso.datetime({ offset: true }).optional(),
+});
+
+// Browse slots (any logged-in user). Optional ?from=...&to=... time window.
+router.get("/", auth, async (req, res) => {
+  const parsed = listSchema.safeParse(req.query);
+  if (!parsed.success) {
+    throw new AppError(400, "INVALID_INPUT", "Invalid date range");
+  }
+
+  const slots = await slotQueryService.listSlots({
+    from: parsed.data.from ? new Date(parsed.data.from) : undefined,
+    to: parsed.data.to ? new Date(parsed.data.to) : undefined,
+  });
+
+  res.json(slots);
 });
 
 router.post("/", auth, requireRole("TUTOR"), async (req, res) => {
