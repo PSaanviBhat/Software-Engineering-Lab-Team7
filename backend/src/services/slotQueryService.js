@@ -13,14 +13,22 @@ function toListDto(slot) {
   };
 }
 
-// Returns slots, optionally limited to a time window (from inclusive, to exclusive).
-async function listSlots({ from, to } = {}) {
+// Returns slots, optionally filtered.
+// from (inclusive) / to (exclusive): time window
+// subject: case-insensitive "contains" match
+// tutorId: exact tutor
+// mode: ONLINE or IN_PERSON
+async function listSlots({ from, to, subject, tutorId, mode } = {}) {
   const where = {};
+
   if (from || to) {
     where.startUtc = {};
     if (from) where.startUtc.gte = from;
     if (to) where.startUtc.lt = to;
   }
+  if (subject) where.subject = { contains: subject, mode: "insensitive" };
+  if (tutorId) where.tutorId = tutorId;
+  if (mode) where.mode = mode;
 
   const slots = await prisma.slot.findMany({
     where,
@@ -31,4 +39,14 @@ async function listSlots({ from, to } = {}) {
   return slots.map(toListDto);
 }
 
-module.exports = { listSlots };
+// Tutors that currently have at least one slot (used for the tutor filter dropdown).
+async function listTutorsWithSlots() {
+  const tutors = await prisma.user.findMany({
+    where: { slots: { some: {} } },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+  return tutors;
+}
+
+module.exports = { listSlots, listTutorsWithSlots };

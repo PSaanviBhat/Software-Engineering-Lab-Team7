@@ -19,18 +19,31 @@ const createSchema = z.object({
 const listSchema = z.object({
   from: z.iso.datetime({ offset: true }).optional(),
   to: z.iso.datetime({ offset: true }).optional(),
+  subject: z.string().trim().min(1).max(100).optional(),
+  tutorId: z.string().trim().min(1).max(100).optional(),
+  mode: z.enum(["ONLINE", "IN_PERSON"]).optional(),
 });
 
-// Browse slots (any logged-in user). Optional ?from=...&to=... time window.
+// Tutors who have slots, for the filter dropdown (any logged-in user).
+router.get("/tutors", auth, async (req, res) => {
+  const tutors = await slotQueryService.listTutorsWithSlots();
+  res.json(tutors);
+});
+
+// Browse slots (any logged-in user).
+// Optional filters: ?from=&to= (ISO datetimes), ?subject=, ?tutorId=, ?mode=ONLINE|IN_PERSON
 router.get("/", auth, async (req, res) => {
   const parsed = listSchema.safeParse(req.query);
   if (!parsed.success) {
-    throw new AppError(400, "INVALID_INPUT", "Invalid date range");
+    throw new AppError(400, "INVALID_INPUT", "Invalid filter values");
   }
 
   const slots = await slotQueryService.listSlots({
     from: parsed.data.from ? new Date(parsed.data.from) : undefined,
     to: parsed.data.to ? new Date(parsed.data.to) : undefined,
+    subject: parsed.data.subject,
+    tutorId: parsed.data.tutorId,
+    mode: parsed.data.mode,
   });
 
   res.json(slots);
