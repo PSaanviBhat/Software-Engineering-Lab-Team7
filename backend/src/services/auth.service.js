@@ -63,14 +63,17 @@ async function register(input) {
     },
   });
 
-  const secret = process.env.JWT_SECRET || "default_jwt_secret";
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured");
+  }
+
   const token = jwt.sign(
     {
       id: user.id,
       email: user.email,
       role: user.role,
     },
-    secret,
+    process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
 

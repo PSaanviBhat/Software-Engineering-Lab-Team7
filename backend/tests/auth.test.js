@@ -11,6 +11,20 @@ jest.mock("../src/lib/prisma", () => ({
 }));
 
 describe("Auth Registration - TC-AUTH-01 (F-001, SR-002)", () => {
+  const originalJwtSecret = process.env.JWT_SECRET;
+
+  beforeAll(() => {
+    process.env.JWT_SECRET = "test-only-jwt-secret";
+  });
+
+  afterAll(() => {
+    if (originalJwtSecret === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = originalJwtSecret;
+    }
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
