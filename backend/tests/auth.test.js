@@ -1,5 +1,6 @@
 const request = require("supertest");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const app = require("../src/app");
 const prisma = require("../src/lib/prisma");
 
@@ -193,5 +194,102 @@ describe("Auth Registration - TC-AUTH-01 (F-001, SR-002)", () => {
       expect(res.status).toBe(401);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("Auth Login and Authorization - TC-AUTH-03 (F-003, SR-003)", () => {
+  const originalJwtSecret = process.env.JWT_SECRET;
+
+  beforeAll(() => {
+    process.env.JWT_SECRET = "test-only-jwt-secret";
+  });
+
+  afterAll(() => {
+    if (originalJwtSecret === undefined) {
+      delete process.env.JWT_SECRET;
+    } else {
+      process.env.JWT_SECRET = originalJwtSecret;
+    }
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("logs in with valid credentials and returns a JWT without exposing the password hash", async () => {
+    const passwordHash = await bcrypt.hash("StrongPassword123!", 12);
+    prisma.user.findUnique.mockResolvedValue({
+      id: "user-uuid-2",
+      name: "Test Learner",
+      email: "learner@example.edu",
+      passwordHash,
+      role: "LEARNER",
+      verified: false,
+      suspended: false,
+      subjects: [],
+      bio: null,
+    });
+
+    const res = await request(app).post("/api/auth/login").send({
+      email: "LEARNER@EXAMPLE.EDU",
+      password: "StrongPassword123!",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe("learner@example.edu");
+    expect(res.body.user.role).toBe("LEARNER");
+    expect(res.body.user).not.toHaveProperty("passwordHash");
+    expect(jwt.verify(res.body.token, "test-only-jwt-secret")).toMatchObject({
+      id: "user-uuid-2",
+      email: "learner@example.edu",
+      role: "LEARNER",
+    });
+  });
+
+  it("rejects invalid login credentials with a generic 401 response", async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: "user-uuid-2",
+      email: "learner@example.edu",
+      passwordHash: await bcrypt.hash("CorrectPassword123!", 12),
+      role: "LEARNER",
+      verified: false,
+      suspended: false,
+      subjects: [],
+      bio: null,
+    });
+
+    const res = await request(app).post("/api/auth/login").send({
+      email: "learner@example.edu",
+      password: "WrongPassword123!",
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("INVALID_CREDENTIALS");
+    expect(res.body.message).toBe("Invalid email or password");
+  });
+
+  it("allows a valid JWT to access the protected current-user endpoint", async () => {
+    const token = jwt.sign(
+      { id: "user-uuid-2", email: "learner@example.edu", role: "LEARNER" },
+      "test-only-jwt-secret"
+    );
+
+    const res = await request(app)
+      .get("/api/auth/me")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({
+      id: "user-uuid-2",
+      email: "learner@example.edu",
+      role: "LEARNER",
+    });
+  });
+
+  it("rejects requests without a JWT", async () => {
+    const res = await request(app).get("/api/auth/me");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("UNAUTHORIZED");
   });
 });
