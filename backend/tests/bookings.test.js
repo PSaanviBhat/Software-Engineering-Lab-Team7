@@ -142,3 +142,82 @@ describe("POST /api/bookings", () => {
     expect(res.status).toBe(201);
   });
 });
+
+describe("POST /api/bookings concurrency and overlap", () => {
+  it("TC-BOOK-02: 10 simultaneous requests for one slot give exactly one 201 and nine 409 SLOT_TAKEN", async () => {
+    const tutor = await makeUser("TUTOR");
+    const learners = await Promise.all(Array.from({ length: 10 }, () => makeUser()));
+    const slot = await makeSlot(tutor.id);
+
+    const results = await Promise.all(learners.map((l) => book(l, slot.id)));
+
+    expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+    const losers = results.filter((r) => r.status === 409);
+    expect(losers).toHaveLength(9);
+    losers.forEach((r) => expect(r.body.error).toBe("SLOT_TAKEN"));
+    const active = await prisma.booking.count({ where: { slotId: slot.id, status: "CONFIRMED" } });
+    expect(active).toBe(1);
+  });
+
+  it("TC-BOOK-03: same learner, overlapping slots from different tutors gives 409 LEARNER_OVERLAP", async () => {
+    const [tutorA, tutorB] = [await makeUser("TUTOR"), await makeUser("TUTOR")];
+    const learner = await makeUser();
+    const slotA = await makeSlot(tutorA.id, 48, 1);
+    const slotB = await makeSlot(tutorB.id, 48.5, 1);
+
+    const first = await book(learner, slotA.id);
+    const second = await book(learner, slotB.id);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.body.error).toBe("LEARNER_OVERLAP");
+    expect(second.body.clashingBookingId).toBe(first.body.bookingId);
+    const stillFree = await prisma.slot.findUnique({ where: { id: slotB.id } });
+    expect(stillFree.status).toBe("FREE");
+  });
+
+  it("allows back-to-back slots (one ends exactly when the next starts)", async () => {
+    const [tutorA, tutorB] = [await makeUser("TUTOR"), await makeUser("TUTOR")];
+    const learner = await makeUser();
+    const slotA = await makeSlot(tutorA.id, 72, 1);
+    const slotB = await makeSlot(tutorB.id, 73, 1);
+
+    expect((await book(learner, slotA.id)).status).toBe(201);
+    expect((await book(learner, slotB.id)).status).toBe(201);
+  });
+
+  it("ignores cancelled bookings when checking overlap", async () => {
+    const [tutorA, tutorB] = [await makeUser("TUTOR"), await makeUser("TUTOR")];
+    const learner = await makeUser();
+    const slotA = await makeSlot(tutorA.id, 96, 1);
+    const slotB = await makeSlot(tutorB.id, 96, 1);
+
+    const first = await book(learner, slotA.id);
+    await prisma.booking.update({ where: { id: first.body.bookingId }, data: { status: "CANCELLED" } });
+
+    expect((await book(learner, slotB.id)).status).toBe(201);
+  });
+
+  it("one learner firing two overlapping requests at once gets one 201 and one LEARNER_OVERLAP", async () => {
+    const [tutorA, tutorB] = [await makeUser("TUTOR"), await makeUser("TUTOR")];
+    const learner = await makeUser();
+    const slotA = await makeSlot(tutorA.id, 120, 1);
+    const slotB = await makeSlot(tutorB.id, 120, 1);
+
+    const results = await Promise.all([book(learner, slotA.id), book(learner, slotB.id)]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(results.find((r) => r.status === 409).body.error).toBe("LEARNER_OVERLAP");
+  });
+
+  it("database rejects a second CONFIRMED booking for the same slot (unique index backstop)", async () => {
+    const tutor = await makeUser("TUTOR");
+    const [first, second] = [await makeUser(), await makeUser()];
+    const slot = await makeSlot(tutor.id);
+    await prisma.booking.create({ data: { slotId: slot.id, learnerId: first.id } });
+
+    await expect(
+      prisma.booking.create({ data: { slotId: slot.id, learnerId: second.id } })
+    ).rejects.toMatchObject({ code: "P2002" });
+  });
+});
