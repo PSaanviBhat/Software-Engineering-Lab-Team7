@@ -14,6 +14,7 @@ const createSchema = z.object({
   end: z.iso.datetime({ offset: true }),
   mode: z.enum(["ONLINE", "IN_PERSON"]),
   link: z.string().trim().max(500).optional(),
+  repeatWeeks: z.number().int().min(1).max(8).optional(),
 });
 
 const listSchema = z.object({
@@ -63,6 +64,19 @@ router.post("/", auth, requireRole("TUTOR"), async (req, res) => {
   }
   if (startUtc <= new Date()) {
     throw new AppError(400, "SLOT_IN_PAST", "Slot must start in the future");
+  }
+
+  if (parsed.data.repeatWeeks !== undefined) {
+    const result = await slotService.createRecurringSlots({
+      tutorId: req.user.id,
+      subject: parsed.data.subject,
+      startUtc,
+      endUtc,
+      mode: parsed.data.mode,
+      link: parsed.data.link,
+      repeatWeeks: parsed.data.repeatWeeks,
+    });
+    return res.status(201).json(result);
   }
 
   const slot = await slotService.createSlot({
