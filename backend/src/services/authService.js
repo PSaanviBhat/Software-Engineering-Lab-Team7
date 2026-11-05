@@ -7,15 +7,15 @@ const AppError = require("../lib/AppError");
 const { sendVerificationEmail } = require("./notificationService");
 
 const loginSchema = z.object({
-  email: z.string().trim().email("Invalid email address").toLowerCase(),
-  password: z.string().min(1, "Password is required"),
-});
+  email: z.string().trim().max(254).email("Invalid email address").toLowerCase(),
+  password: z.string().min(1, "Password is required").max(128),
+}).strict();
 
 const registerSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(100, "Name is too long"),
-  email: z.string().trim().email("Invalid email address").toLowerCase(),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-});
+  email: z.string().trim().max(254).email("Invalid email address").toLowerCase(),
+  password: z.string().min(8, "Password must be at least 8 characters").max(128),
+}).strict();
 
 const tutorProfileSchema = z.object({
   subjects: z

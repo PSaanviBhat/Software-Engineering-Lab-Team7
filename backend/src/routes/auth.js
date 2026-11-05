@@ -1,14 +1,29 @@
 const express = require("express");
 const authService = require("../services/authService");
 const auth = require("../middleware/auth");
+const { loginLimiter, rateLimitError } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
 router.post("/login", async (req, res, next) => {
+  const key = req.ip;
+  const status = await loginLimiter.isBlocked(key);
+  if (!status.allowed) {
+    res.set("Retry-After", String(status.retryAfterSeconds));
+    return next(rateLimitError(status.retryAfterSeconds));
+  }
+
   try {
     const result = await authService.login(req.body);
     res.json(result);
   } catch (error) {
+    if (error.status === 400 || error.status === 401) {
+      const failure = await loginLimiter.consume(key);
+      if (!failure.allowed) {
+        res.set("Retry-After", String(failure.retryAfterSeconds));
+        return next(rateLimitError(failure.retryAfterSeconds));
+      }
+    }
     next(error);
   }
 });
