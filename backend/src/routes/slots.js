@@ -5,6 +5,7 @@ const { requireRole } = require("../middleware/rbac");
 const AppError = require("../lib/AppError");
 const slotService = require("../services/slotService");
 const slotQueryService = require("../services/slotQueryService");
+const notificationService = require("../services/notificationService");
 
 const router = express.Router();
 
@@ -89,6 +90,67 @@ router.post("/", auth, requireRole("TUTOR"), async (req, res) => {
   });
 
   res.status(201).json(slot);
+});
+
+const editSchema = z.object({
+  subject: z.string().trim().min(1).max(100),
+  start: z.iso.datetime({ offset: true }),
+  end: z.iso.datetime({ offset: true }),
+  mode: z.enum(["ONLINE", "IN_PERSON"]),
+  link: z.string().trim().max(500).optional(),
+});
+
+router.put("/:id", auth, requireRole("TUTOR"), async (req, res) => {
+  const parsedId = z.uuid().safeParse(req.params.id);
+  if (!parsedId.success) {
+    throw new AppError(400, "INVALID_INPUT", "Invalid slot id");
+  }
+
+  const parsedBody = editSchema.safeParse(req.body);
+  if (!parsedBody.success) {
+    throw new AppError(400, "INVALID_INPUT", "Invalid slot details");
+  }
+
+  const startUtc = new Date(parsedBody.data.start);
+  const endUtc = new Date(parsedBody.data.end);
+
+  if (endUtc <= startUtc) {
+    throw new AppError(400, "INVALID_TIME_RANGE", "End time must be after start time");
+  }
+  if (startUtc <= new Date()) {
+    throw new AppError(400, "SLOT_IN_PAST", "Slot must start in the future");
+  }
+
+  const slot = await slotService.updateSlot({
+    tutorId: req.user.id,
+    slotId: parsedId.data,
+    subject: parsedBody.data.subject,
+    startUtc,
+    endUtc,
+    mode: parsedBody.data.mode,
+    link: parsedBody.data.link,
+  });
+
+  res.json(slot);
+});
+
+router.delete("/:id", auth, requireRole("TUTOR"), async (req, res) => {
+  const parsedId = z.uuid().safeParse(req.params.id);
+  if (!parsedId.success) {
+    throw new AppError(400, "INVALID_INPUT", "Invalid slot id");
+  }
+
+  const { cancelledBookingIds } = await slotService.deleteSlot({
+    tutorId: req.user.id,
+    slotId: parsedId.data,
+  });
+
+  for (const bookingId of cancelledBookingIds) {
+    await notificationService.cancelReminders(bookingId);
+    await notificationService.enqueueSlotCancelled(bookingId);
+  }
+
+  res.status(204).send();
 });
 
 module.exports = router;

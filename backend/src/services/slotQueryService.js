@@ -19,7 +19,9 @@ function toListDto(slot) {
 // tutorId: exact tutor
 // mode: ONLINE or IN_PERSON
 async function listSlots({ from, to, subject, tutorId, mode } = {}) {
-  const where = {};
+  const where = {
+    status: { not: "CANCELLED" },
+  };
 
   if (from || to) {
     where.startUtc = {};
@@ -42,7 +44,7 @@ async function listSlots({ from, to, subject, tutorId, mode } = {}) {
 // Tutors that currently have at least one slot (used for the tutor filter dropdown).
 async function listTutorsWithSlots() {
   const tutors = await prisma.user.findMany({
-    where: { slots: { some: {} } },
+    where: { slots: { some: { status: { not: "CANCELLED" } } } },
     select: { id: true, name: true },
     orderBy: { name: "asc" },
   });
