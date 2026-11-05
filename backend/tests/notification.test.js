@@ -25,7 +25,7 @@ const confirmed = {
     mode: "ONLINE",
     link: "https://meet.example.com/x",
     startUtc: new Date("2026-11-10T10:00:00Z"),
-    tutor: { name: "Tutor 1" },
+    tutor: { name: "Tutor 1", email: "tutor1@test.local" },
   },
 };
 const job = { data: { bookingId: "b1", type: "CONFIRMATION" }, attemptsMade: 0 };
@@ -49,10 +49,12 @@ describe("PTS-31 confirmation email", () => {
     await expect(enqueueConfirmation("b1")).resolves.toBeUndefined();
   });
 
-  it("sends the email and logs it for a confirmed booking", async () => {
+    it("TC-NOTIF-01: sends one email to the learner and the tutor, and logs it", async () => {
     prisma.booking.findUnique.mockResolvedValue(confirmed);
     await processEmail(job);
-    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: "asha@test.local" }));
+    expect(sendMail).toHaveBeenCalledWith(
+     expect.objectContaining({ to: ["asha@test.local", "tutor1@test.local"] })
+   );    
     expect(prisma.emailLog.create).toHaveBeenCalledWith({
       data: { bookingId: "b1", type: "CONFIRMATION", status: "SENT", attempts: 1 },
     });
