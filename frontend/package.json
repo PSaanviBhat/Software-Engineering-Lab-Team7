@@ -21,6 +21,8 @@
     "react-dom": "^18"
   },
   "devDependencies": {
+    "@emnapi/core": "^1.11.3",
+    "@emnapi/runtime": "^1.11.3",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
     "postcss": "^8",
