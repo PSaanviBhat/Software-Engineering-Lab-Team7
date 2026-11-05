@@ -4,7 +4,41 @@ const AppError = require("../lib/AppError");
 const TX_OPTIONS = { maxWait: 10000, timeout: 10000 };
 const CANCEL_CUTOFF_MS = 2 * 60 * 60 * 1000;
 
-async function createBooking({ learnerId, slotId, note }) {
+// The rules every new booking must pass, shared by booking and rescheduling.
+// The caller has already locked the learner and the slot. ignoreBookingId is the booking
+// being moved on a reschedule, which must not clash with itself.
+async function assertBookable(tx, { learnerId, slot, ignoreBookingId }) {
+  if (!slot) throw new AppError(404, "SLOT_NOT_FOUND", "Slot not found");
+  if (slot.tutorId === learnerId) {
+    throw new AppError(403, "OWN_SLOT", "You cannot book your own slot");
+  }
+  if (slot.startUtc <= new Date()) {
+    throw new AppError(400, "SLOT_IN_PAST", "Slot has already started");
+  }
+  if (slot.status !== "FREE") throw new AppError(409, "SLOT_TAKEN", "Slot is already booked");
+
+  // existing.start < new.end AND existing.end > new.start (UTC)
+  const clash = await tx.booking.findFirst({
+    where: {
+      learnerId,
+      status: "CONFIRMED",
+      id: ignoreBookingId ? { not: ignoreBookingId } : undefined,
+      slot: { startUtc: { lt: slot.endUtc }, endUtc: { gt: slot.startUtc } },
+    },
+    select: { id: true },
+  });
+  if (clash) {
+    throw new AppError(
+      409,
+      "LEARNER_OVERLAP",
+      "You already have a booking that overlaps this time",
+      {},
+      { clashingBookingId: clash.id }
+    );
+  }
+}
+
+async function assertVerified(learnerId) {
   const learner = await prisma.user.findUnique({
     where: { id: learnerId },
     select: { verified: true },
@@ -12,6 +46,10 @@ async function createBooking({ learnerId, slotId, note }) {
   if (!learner || !learner.verified) {
     throw new AppError(403, "EMAIL_NOT_VERIFIED", "Verify your email before booking");
   }
+}
+
+async function createBooking({ learnerId, slotId, note }) {
+  await assertVerified(learnerId);
 
   try {
     return await prisma.$transaction(async (tx) => {
@@ -23,33 +61,7 @@ async function createBooking({ learnerId, slotId, note }) {
       // Lock the slot row; concurrent requests for the same slot queue up here.
       const slots = await tx.$queryRaw`SELECT * FROM "Slot" WHERE id = ${slotId} FOR UPDATE`;
       const slot = slots[0];
-      if (!slot) throw new AppError(404, "SLOT_NOT_FOUND", "Slot not found");
-      if (slot.tutorId === learnerId) {
-        throw new AppError(403, "OWN_SLOT", "You cannot book your own slot");
-      }
-      if (slot.startUtc <= new Date()) {
-        throw new AppError(400, "SLOT_IN_PAST", "Slot has already started");
-      }
-      if (slot.status !== "FREE") throw new AppError(409, "SLOT_TAKEN", "Slot is already booked");
-
-      // existing.start < new.end AND existing.end > new.start (UTC)
-      const clash = await tx.booking.findFirst({
-        where: {
-          learnerId,
-          status: "CONFIRMED",
-          slot: { startUtc: { lt: slot.endUtc }, endUtc: { gt: slot.startUtc } },
-        },
-        select: { id: true },
-      });
-      if (clash) {
-        throw new AppError(
-          409,
-          "LEARNER_OVERLAP",
-          "You already have a booking that overlaps this time",
-          {},
-          { clashingBookingId: clash.id }
-        );
-      }
+      await assertBookable(tx, { learnerId, slot });
 
       const booking = await tx.booking.create({ data: { slotId, learnerId, note } });
       await tx.slot.update({ where: { id: slotId }, data: { status: "BOOKED" } });
@@ -177,4 +189,70 @@ async function cancelBooking({ learnerId, bookingId }) {
   }, TX_OPTIONS);
 }
 
-module.exports = { createBooking, listMyBookings, cancelBooking };
+// Moves a booking to another free slot in ONE transaction (SRS P2P-F-017): the new slot
+// passes the same rules as a fresh booking, then the old booking is cancelled, the old
+// slot freed and the new booking created. Any failure rolls everything back.
+async function rescheduleBooking({ learnerId, bookingId, newSlotId }) {
+  await assertVerified(learnerId);
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const learners = await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${learnerId} FOR UPDATE`;
+      if (learners.length === 0) throw new AppError(401, "UNAUTHORIZED", "User not found");
+
+      const found = await tx.booking.findUnique({ where: { id: bookingId } });
+      if (!found) throw new AppError(404, "BOOKING_NOT_FOUND", "Booking not found");
+      if (found.learnerId !== learnerId) {
+        throw new AppError(403, "FORBIDDEN", "You can only reschedule your own bookings");
+      }
+      if (found.slotId === newSlotId) {
+        throw new AppError(400, "SAME_SLOT", "Choose a different slot to reschedule to");
+      }
+
+      // Lock both slots in id order, so two reschedules swapping slots cannot deadlock.
+      const locked = {};
+      for (const id of [found.slotId, newSlotId].sort()) {
+        const rows = await tx.$queryRaw`SELECT * FROM "Slot" WHERE id = ${id} FOR UPDATE`;
+        locked[id] = rows[0];
+      }
+      const oldSlot = locked[found.slotId];
+      const newSlot = locked[newSlotId];
+
+      const booking = await tx.booking.findUnique({ where: { id: bookingId } });
+      if (booking.status !== "CONFIRMED") {
+        throw new AppError(409, "ALREADY_CANCELLED", "Booking is already cancelled");
+      }
+      // Moving a booking cancels the old one, so the cancellation window applies.
+      if (oldSlot.startUtc.getTime() - Date.now() < CANCEL_CUTOFF_MS) {
+        throw new AppError(
+          409,
+          "TOO_LATE_TO_CANCEL",
+          "Bookings cannot be changed less than 2 hours before the start"
+        );
+      }
+
+      await assertBookable(tx, { learnerId, slot: newSlot, ignoreBookingId: bookingId });
+
+      await tx.booking.update({ where: { id: bookingId }, data: { status: "CANCELLED" } });
+      await tx.slot.update({ where: { id: oldSlot.id }, data: { status: "FREE" } });
+      const created = await tx.booking.create({
+        data: { slotId: newSlotId, learnerId, note: booking.note },
+      });
+      await tx.slot.update({ where: { id: newSlotId }, data: { status: "BOOKED" } });
+
+      return {
+        bookingId: created.id,
+        oldBookingId: bookingId,
+        slotId: newSlot.id,
+        start: newSlot.startUtc.toISOString(),
+        end: newSlot.endUtc.toISOString(),
+        status: created.status,
+      };
+    }, TX_OPTIONS);
+  } catch (err) {
+    if (err.code === "P2002") throw new AppError(409, "SLOT_TAKEN", "Slot is already booked");
+    throw err;
+  }
+}
+
+module.exports = { createBooking, listMyBookings, cancelBooking, rescheduleBooking };
