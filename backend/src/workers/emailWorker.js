@@ -5,7 +5,7 @@ const { EMAIL_QUEUE } = require("../queues/emailQueue");
 const { sendMail } = require("../lib/mailer");
 const { buildEmail } = require("../services/emailTemplates");
 
-// Handles one job. Throwing makes BullMQ retry it (PTS-33 sets how often).
+// Handles one job. Throwing makes BullMQ retry it with the backoff set on the queue.
 async function processEmail(job) {
   const { bookingId, type } = job.data;
 
@@ -26,11 +26,32 @@ async function processEmail(job) {
   return { sent: true };
 }
 
+// Called after every failed attempt (SRS F-022, TC-NOTIF-04). RETRYING means another
+// attempt is coming, FAILED means BullMQ has given up.
+async function recordFailure(job, err) {
+  const attempts = job.attemptsMade;
+  const finalFailure = attempts >= (job.opts.attempts || 1);
+  await prisma.emailLog.create({
+    data: {
+      bookingId: job.data.bookingId,
+      type: job.data.type,
+      status: finalFailure ? "FAILED" : "RETRYING",
+      attempts,
+    },
+  });
+  console.error(
+    `email ${job.data.type} for booking ${job.data.bookingId} failed (attempt ${attempts}): ${err.message}`
+  );
+}
+
 function startEmailWorker() {
   const worker = new Worker(EMAIL_QUEUE, processEmail, { connection: getConnection() });
-  worker.on("failed", (job, err) => console.error("email job failed:", err.message));
+  worker.on("failed", (job, err) => {
+    if (!job) return;
+    recordFailure(job, err).catch((e) => console.error("could not write EmailLog:", e.message));
+  });
   worker.on("error", (err) => console.error("email worker error:", err.message));
   return worker;
 }
 
-module.exports = { processEmail, startEmailWorker };
+module.exports = { processEmail, recordFailure, startEmailWorker };
