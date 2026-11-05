@@ -16,7 +16,7 @@ const createSchema = z.object({
   mode: z.enum(["ONLINE", "IN_PERSON"]),
   link: z.string().trim().max(500).optional(),
   repeatWeeks: z.number().int().min(1).max(8).optional(),
-});
+}).strict();
 
 const listSchema = z.object({
   from: z.iso.datetime({ offset: true }).optional(),
@@ -24,7 +24,7 @@ const listSchema = z.object({
   subject: z.string().trim().min(1).max(100).optional(),
   tutorId: z.string().trim().min(1).max(100).optional(),
   mode: z.enum(["ONLINE", "IN_PERSON"]).optional(),
-});
+}).strict();
 
 // Tutors who have slots, for the filter dropdown (any logged-in user).
 router.get("/tutors", auth, async (req, res) => {
@@ -98,7 +98,7 @@ const editSchema = z.object({
   end: z.iso.datetime({ offset: true }),
   mode: z.enum(["ONLINE", "IN_PERSON"]),
   link: z.string().trim().max(500).optional(),
-});
+}).strict();
 
 router.put("/:id", auth, requireRole("TUTOR"), async (req, res) => {
   const parsedId = z.uuid().safeParse(req.params.id);

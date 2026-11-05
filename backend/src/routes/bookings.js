@@ -3,6 +3,7 @@ const { z } = require("zod");
 const auth = require("../middleware/auth");
 const AppError = require("../lib/AppError");
 const bookingService = require("../services/bookingService");
+const { bookingLimiter, middleware } = require("../middleware/rateLimit");
 const {
   enqueueConfirmation,
   scheduleReminders,
@@ -13,9 +14,9 @@ const router = express.Router();
 const createSchema = z.object({
   slotId: z.uuid(),
   note: z.string().max(500).optional(),
-});
+}).strict();
 
-router.post("/", auth, async (req, res) => {
+router.post("/", auth, middleware(bookingLimiter, (req) => req.user.id), async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) throw new AppError(400, "INVALID_INPUT", "Invalid booking request");
 
@@ -49,7 +50,7 @@ router.delete("/:id", auth, async (req, res) => {
 
   res.json(result);});
 
-const rescheduleSchema = z.object({ newSlotId: z.uuid() });
+const rescheduleSchema = z.object({ newSlotId: z.uuid() }).strict();
 
 router.patch("/:id", auth, async (req, res) => {
   const id = z.uuid().safeParse(req.params.id);
