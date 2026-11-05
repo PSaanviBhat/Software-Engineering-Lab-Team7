@@ -30,11 +30,11 @@ async function makeUser(role = "LEARNER") {
 const tokenFor = (user) =>
   jwt.sign({ id: user.id, email: user.email, role: user.role }, process.env.JWT_SECRET);
 
-async function makeSlot(tutorId, startOffsetHours = 48, durationHours = 1) {
+async function makeSlot(tutorId, startOffsetHours = 48, durationHours = 1, subject = "DBMS") {
   const startUtc = new Date(Date.now() + startOffsetHours * HOUR);
   const endUtc = new Date(startUtc.getTime() + durationHours * HOUR);
   return prisma.slot.create({
-    data: { tutorId, subject: "DBMS", startUtc, endUtc, mode: "ONLINE" },
+    data: { tutorId, subject, startUtc, endUtc, mode: "ONLINE" },
   });
 }
 
@@ -315,6 +315,132 @@ describe("GET /api/bookings/me", () => {
 
   it("returns 401 without a token", async () => {
     expect((await request(app).get("/api/bookings/me")).status).toBe(401);
+  });
+});
+
+describe("TC-BOOK-04: alternatives on a booking conflict (F-015)", () => {
+  // Each test uses its own subject so slots from other tests or the seed never leak in.
+  let subjectSeq = 0;
+  const newSubject = () => `ALT-${run}-${subjectSeq++}`;
+
+  async function takenSlot(subject, tutor, offsetHours = 48) {
+    const slot = await makeSlot(tutor.id, offsetHours, 1, subject);
+    const winner = await makeUser();
+    expect((await book(winner, slot.id)).status).toBe(201);
+    return slot;
+  }
+
+  it("returns up to 3 nearest free future slots of the same subject, none of them taken", async () => {
+    const subject = newSubject();
+    const tutor = await makeUser("TUTOR");
+    const taken = await takenSlot(subject, tutor, 48);
+    const near = await makeSlot((await makeUser("TUTOR")).id, 49, 1, subject);
+    const mid = await makeSlot((await makeUser("TUTOR")).id, 51, 1, subject);
+    const far = await makeSlot((await makeUser("TUTOR")).id, 60, 1, subject);
+    await makeSlot((await makeUser("TUTOR")).id, 200, 1, subject);
+    await makeSlot((await makeUser("TUTOR")).id, -5, 1, subject);
+    const otherSubject = await makeSlot((await makeUser("TUTOR")).id, 48, 1, newSubject());
+    const alsoBooked = await takenSlot(subject, await makeUser("TUTOR"), 50);
+    const loser = await makeUser();
+
+    const res = await book(loser, taken.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("SLOT_TAKEN");
+    expect(res.body.alternatives).toHaveLength(3);
+    expect(res.body.alternatives.map((a) => a.slotId)).toEqual([near.id, mid.id, far.id]);
+    for (const alt of res.body.alternatives) {
+      const row = await prisma.slot.findUnique({ where: { id: alt.slotId } });
+      expect(row.status).toBe("FREE");
+      expect(new Date(alt.start).getTime()).toBeGreaterThan(Date.now());
+      expect(alt.subject).toBe(subject);
+      expect([taken.id, alsoBooked.id, otherSubject.id]).not.toContain(alt.slotId);
+    }
+    expect(res.body.alternatives[0]).toEqual({
+      slotId: near.id,
+      tutorId: near.tutorId,
+      tutorName: expect.any(String),
+      subject,
+      start: near.startUtc.toISOString(),
+      end: near.endUtc.toISOString(),
+      mode: "ONLINE",
+    });
+  });
+
+  it("returns fewer than 3 when fewer exist, and an empty list when none exist", async () => {
+    const subject = newSubject();
+    const taken = await takenSlot(subject, await makeUser("TUTOR"));
+    const loser = await makeUser();
+
+    const none = await book(loser, taken.id);
+    expect(none.status).toBe(409);
+    expect(none.body.alternatives).toEqual([]);
+
+    const only = await makeSlot((await makeUser("TUTOR")).id, 52, 1, subject);
+    const one = await book(loser, taken.id);
+    expect(one.body.alternatives.map((a) => a.slotId)).toEqual([only.id]);
+  });
+
+  it("puts the same tutor's slots first, even when another tutor's slot is nearer", async () => {
+    const subject = newSubject();
+    const tutor = await makeUser("TUTOR");
+    const taken = await takenSlot(subject, tutor, 48);
+    const sameTutorLater = await makeSlot(tutor.id, 150, 1, subject);
+    const otherTutorNearer = await makeSlot((await makeUser("TUTOR")).id, 49, 1, subject);
+    const loser = await makeUser();
+
+    const res = await book(loser, taken.id);
+
+    expect(res.body.alternatives.map((a) => a.slotId)).toEqual([
+      sameTutorLater.id,
+      otherTutorNearer.id,
+    ]);
+  });
+
+  it("never suggests the learner's own slots or slots overlapping their confirmed bookings", async () => {
+    const subject = newSubject();
+    const taken = await takenSlot(subject, await makeUser("TUTOR"), 48);
+    const loser = await makeUser("TUTOR");
+    await makeSlot(loser.id, 49, 1, subject);
+    const clashing = await makeSlot((await makeUser("TUTOR")).id, 70, 1, subject);
+    const fine = await makeSlot((await makeUser("TUTOR")).id, 90, 1, subject);
+    const existing = await makeSlot((await makeUser("TUTOR")).id, 70.5, 1, newSubject());
+    expect((await book(loser, existing.id)).status).toBe(201);
+
+    const res = await book(loser, taken.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.alternatives.map((a) => a.slotId)).toEqual([fine.id]);
+    expect(res.body.alternatives.map((a) => a.slotId)).not.toContain(clashing.id);
+  });
+
+  it("also returns alternatives with LEARNER_OVERLAP", async () => {
+    const subject = newSubject();
+    const learner = await makeUser();
+    const first = await makeSlot((await makeUser("TUTOR")).id, 48, 1, subject);
+    const clashing = await makeSlot((await makeUser("TUTOR")).id, 48.5, 1, subject);
+    const free = await makeSlot((await makeUser("TUTOR")).id, 80, 1, subject);
+    expect((await book(learner, first.id)).status).toBe(201);
+
+    const res = await book(learner, clashing.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("LEARNER_OVERLAP");
+    expect(res.body.clashingBookingId).toEqual(expect.any(String));
+    expect(res.body.alternatives.map((a) => a.slotId)).toEqual([free.id]);
+  });
+
+  it("does not add alternatives to a successful booking or to other errors", async () => {
+    const tutor = await makeUser("TUTOR");
+    const slot = await makeSlot(tutor.id, 48, 1, newSubject());
+
+    const own = await book(tutor, slot.id);
+    expect(own.status).toBe(403);
+    expect(own.body).not.toHaveProperty("alternatives");
+
+    const ok = await book(await makeUser(), slot.id);
+    expect(ok.status).toBe(201);
+    expect(ok.body).not.toHaveProperty("alternatives");
   });
 });
 
