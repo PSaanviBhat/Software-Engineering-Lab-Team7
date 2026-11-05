@@ -16,6 +16,7 @@ enum Role {
 enum SlotStatus {
   FREE
   BOOKED
+  CANCELLED
 }
 
 enum SlotMode {

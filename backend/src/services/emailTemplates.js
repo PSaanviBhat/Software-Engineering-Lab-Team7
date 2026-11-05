@@ -36,6 +36,7 @@ const SUBJECTS = {
   CONFIRMATION: "Your tutoring session is confirmed",
   REMINDER_24H: "Reminder: your tutoring session is in 24 hours",
   REMINDER_1H: "Reminder: your tutoring session starts in 1 hour",
+  SLOT_CANCELLED: "Your tutoring session has been cancelled",
 };
 
 // One message addressed to both the learner and the tutor (SRS F-019, TC-NOTIF-01).
@@ -44,10 +45,14 @@ function buildEmail(type, booking) {
   const subject = SUBJECTS[type];
   if (!subject) throw new Error(`Unknown email type: ${type}`);
   const { learner, slot } = booking;
+  const greeting =
+    type === "SLOT_CANCELLED"
+      ? `<p>Hi ${esc(learner.name)},</p><p>Your tutoring session has been cancelled because the tutor removed this slot:</p>`
+      : `<p>Hi ${esc(learner.name)} and ${esc(slot.tutor.name)},</p>`;
   return {
     to: [learner.email, slot.tutor.email],
     subject,
-    html: `<p>Hi ${esc(learner.name)} and ${esc(slot.tutor.name)},</p>${details(booking)}`,
+    html: `${greeting}${details(booking)}`,
   };
 }
 

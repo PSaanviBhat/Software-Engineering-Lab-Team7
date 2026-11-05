@@ -1,6 +1,8 @@
 const prisma = require("../lib/prisma");
 const AppError = require("../lib/AppError");
 
+const TX_OPTIONS = { maxWait: 10000, timeout: 10000 };
+
 function toDto(slot) {
   return {
     id: slot.id,
@@ -33,6 +35,7 @@ async function findOverlappingSlot({
 }) {
   const where = {
     tutorId,
+    status: { not: "CANCELLED" },
     startUtc: { lt: endUtc },
     endUtc: { gt: startUtc },
   };
@@ -130,9 +133,98 @@ async function createRecurringSlots({
   });
 }
 
+async function updateSlot({ tutorId, slotId, subject, startUtc, endUtc, mode, link }) {
+  const existing = await prisma.slot.findUnique({ where: { id: slotId } });
+  if (!existing || existing.status === "CANCELLED") {
+    throw new AppError(404, "SLOT_NOT_FOUND", "Slot not found");
+  }
+  if (existing.tutorId !== tutorId) {
+    throw new AppError(403, "FORBIDDEN", "You do not have permission to edit this slot");
+  }
+  if (existing.status === "BOOKED") {
+    throw new AppError(409, "SLOT_BOOKED", "Cannot edit a booked slot");
+  }
+  if (existing.startUtc <= new Date()) {
+    throw new AppError(400, "SLOT_IN_PAST", "Slot has already started");
+  }
+
+  const overlapping = await findOverlappingSlot({
+    tutorId,
+    startUtc,
+    endUtc,
+    excludeSlotId: slotId,
+  });
+
+  if (overlapping) {
+    throw new AppError(
+      409,
+      "SLOT_OVERLAP",
+      "You already have a slot that overlaps this time"
+    );
+  }
+
+  const updated = await prisma.slot.update({
+    where: { id: slotId },
+    data: {
+      subject,
+      startUtc,
+      endUtc,
+      mode,
+      link: mode === "ONLINE" ? link : null,
+    },
+  });
+
+  return toDto(updated);
+}
+
+async function deleteSlot({ tutorId, slotId }) {
+  return prisma.$transaction(async (tx) => {
+    const slots = await tx.$queryRaw`SELECT * FROM "Slot" WHERE id = ${slotId} FOR UPDATE`;
+    const slot = slots[0];
+    if (!slot || slot.status === "CANCELLED") {
+      throw new AppError(404, "SLOT_NOT_FOUND", "Slot not found");
+    }
+    if (slot.tutorId !== tutorId) {
+      throw new AppError(403, "FORBIDDEN", "You do not have permission to delete this slot");
+    }
+
+    if (slot.status === "FREE") {
+      const bookingCount = await tx.booking.count({ where: { slotId } });
+      if (bookingCount === 0) {
+        await tx.slot.delete({ where: { id: slotId } });
+      } else {
+        await tx.slot.update({ where: { id: slotId }, data: { status: "CANCELLED" } });
+      }
+      return { cancelledBookingIds: [] };
+    }
+
+    // Slot is BOOKED:
+    const bookings = await tx.booking.findMany({
+      where: { slotId, status: "CONFIRMED" },
+      select: { id: true },
+    });
+
+    await tx.booking.updateMany({
+      where: { slotId, status: "CONFIRMED" },
+      data: { status: "CANCELLED" },
+    });
+
+    await tx.slot.update({
+      where: { id: slotId },
+      data: { status: "CANCELLED" },
+    });
+
+    return {
+      cancelledBookingIds: bookings.map((b) => b.id),
+    };
+  }, TX_OPTIONS);
+}
+
 module.exports = {
   createSlot,
   createRecurringSlots,
   findOverlappingSlot,
+  updateSlot,
+  deleteSlot,
   toDto,
 };

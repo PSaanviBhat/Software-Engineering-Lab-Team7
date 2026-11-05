@@ -36,10 +36,36 @@ const postSlot = (token, body) => {
   return req.send(body);
 };
 
+const putSlot = (token, slotId, body) => {
+  const req = request(app).put(`/api/slots/${slotId}`);
+  if (token) req.set("Authorization", `Bearer ${token}`);
+  return req.send(body);
+};
+
+const deleteSlot = (token, slotId) => {
+  const req = request(app).delete(`/api/slots/${slotId}`);
+  if (token) req.set("Authorization", `Bearer ${token}`);
+  return req;
+};
+
 afterAll(async () => {
   if (originalJwtSecret === undefined) delete process.env.JWT_SECRET;
   else process.env.JWT_SECRET = originalJwtSecret;
-  await prisma.booking.deleteMany({ where: { slot: { tutorId: { in: userIds } } } });
+
+  const tutorSlots = await prisma.slot.findMany({
+    where: { tutorId: { in: userIds } },
+    select: { id: true },
+  });
+  const slotIds = tutorSlots.map((s) => s.id);
+  const bookings = await prisma.booking.findMany({
+    where: { slotId: { in: slotIds } },
+    select: { id: true },
+  });
+  const bIds = bookings.map((b) => b.id);
+  if (bIds.length > 0) {
+    await prisma.emailLog.deleteMany({ where: { bookingId: { in: bIds } } });
+  }
+  await prisma.booking.deleteMany({ where: { slotId: { in: slotIds } } });
   await prisma.slot.deleteMany({ where: { tutorId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   await prisma.$disconnect();
@@ -344,5 +370,364 @@ describe("POST /api/slots - Weekly recurring slots (TC-SLOT-02)", () => {
     });
     expect(overlapWithoutExclude).not.toBeNull();
     expect(overlapWithoutExclude.id).toBe(slot.id);
+  });
+});
+
+describe("PUT & DELETE /api/slots/:id - Edit or delete a slot (TC-SLOT-04)", () => {
+  const notificationService = require("../src/services/notificationService");
+  const { processEmail } = require("../src/workers/emailWorker");
+  const mailer = require("../src/lib/mailer");
+
+  let enqueueSlotCancelledSpy;
+  let cancelRemindersSpy;
+
+  beforeEach(() => {
+    enqueueSlotCancelledSpy = jest.spyOn(notificationService, "enqueueSlotCancelled");
+    cancelRemindersSpy = jest.spyOn(notificationService, "cancelReminders");
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("TC-SLOT-04: delete a booked slot -> 204, booking CANCELLED, slot not listed, enqueueSlotCancelled called once per learner", async () => {
+    const tutor = await makeUser("TUTOR");
+    const learner = await makeUser("LEARNER");
+
+    const startUtc = new Date(Date.now() + 48 * HOUR);
+    const endUtc = new Date(startUtc.getTime() + 1 * HOUR);
+
+    const slot = await prisma.slot.create({
+      data: {
+        tutorId: tutor.id,
+        subject: "Algorithms",
+        startUtc,
+        endUtc,
+        mode: "ONLINE",
+        status: "BOOKED",
+      },
+    });
+
+    const booking = await prisma.booking.create({
+      data: {
+        slotId: slot.id,
+        learnerId: learner.id,
+        status: "CONFIRMED",
+      },
+    });
+
+    const res = await deleteSlot(tokenFor(tutor), slot.id);
+    expect(res.status).toBe(204);
+
+    // Booking status becomes CANCELLED
+    const updatedBooking = await prisma.booking.findUnique({ where: { id: booking.id } });
+    expect(updatedBooking.status).toBe("CANCELLED");
+
+    // Slot status becomes CANCELLED
+    const updatedSlot = await prisma.slot.findUnique({ where: { id: slot.id } });
+    expect(updatedSlot.status).toBe("CANCELLED");
+
+    // Slot is not listed in GET /api/slots
+    const listRes = await request(app)
+      .get("/api/slots")
+      .set("Authorization", `Bearer ${tokenFor(learner)}`);
+    expect(listRes.status).toBe(200);
+    const listedIds = listRes.body.map((s) => s.id);
+    expect(listedIds).not.toContain(slot.id);
+
+    // Notifications called
+    expect(cancelRemindersSpy).toHaveBeenCalledWith(booking.id);
+    expect(enqueueSlotCancelledSpy).toHaveBeenCalledWith(booking.id);
+  });
+
+  it("TC-SLOT-04: edit own free slot succeeds; edit that overlaps another slot of the tutor -> 409 SLOT_OVERLAP; edit to its own time succeeds", async () => {
+    const tutor = await makeUser("TUTOR");
+
+    const start1 = new Date(Date.now() + 48 * HOUR);
+    const end1 = new Date(start1.getTime() + 1 * HOUR);
+    const slotA = await prisma.slot.create({
+      data: { tutorId: tutor.id, subject: "Physics", startUtc: start1, endUtc: end1, mode: "ONLINE" },
+    });
+
+    const start2 = new Date(Date.now() + 50 * HOUR);
+    const end2 = new Date(start2.getTime() + 1 * HOUR);
+    await prisma.slot.create({
+      data: { tutorId: tutor.id, subject: "Math", startUtc: start2, endUtc: end2, mode: "ONLINE" },
+    });
+
+    // Edit slot A to a new free time (52h-53h) -> succeeds
+    const newStart = new Date(Date.now() + 52 * HOUR);
+    const newEnd = new Date(newStart.getTime() + 1 * HOUR);
+    const resEdit = await putSlot(tokenFor(tutor), slotA.id, {
+      subject: "Advanced Physics",
+      start: newStart.toISOString(),
+      end: newEnd.toISOString(),
+      mode: "IN_PERSON",
+    });
+    expect(resEdit.status).toBe(200);
+    expect(resEdit.body.subject).toBe("Advanced Physics");
+    expect(resEdit.body.mode).toBe("IN_PERSON");
+    expect(resEdit.body.start).toBe(newStart.toISOString());
+    expect(resEdit.body.end).toBe(newEnd.toISOString());
+
+    // Edit slot A to overlap slot B (50h-51h) -> 409 SLOT_OVERLAP
+    const resOverlap = await putSlot(tokenFor(tutor), slotA.id, {
+      subject: "Advanced Physics",
+      start: start2.toISOString(),
+      end: end2.toISOString(),
+      mode: "ONLINE",
+    });
+    expect(resOverlap.status).toBe(409);
+    expect(resOverlap.body.error).toBe("SLOT_OVERLAP");
+
+    // Edit slot A to its own current time -> succeeds
+    const resOwnTime = await putSlot(tokenFor(tutor), slotA.id, {
+      subject: "Advanced Physics Updated",
+      start: newStart.toISOString(),
+      end: newEnd.toISOString(),
+      mode: "ONLINE",
+    });
+    expect(resOwnTime.status).toBe(200);
+    expect(resOwnTime.body.subject).toBe("Advanced Physics Updated");
+  });
+
+  it("TC-SLOT-04: edit a BOOKED slot -> 409 SLOT_BOOKED; delete a FREE slot -> 204", async () => {
+    const tutor = await makeUser("TUTOR");
+    const learner = await makeUser("LEARNER");
+
+    const startUtc = new Date(Date.now() + 48 * HOUR);
+    const endUtc = new Date(startUtc.getTime() + 1 * HOUR);
+
+    // Booked slot cannot be edited
+    const bookedSlot = await prisma.slot.create({
+      data: {
+        tutorId: tutor.id,
+        subject: "Chemistry",
+        startUtc,
+        endUtc,
+        mode: "ONLINE",
+        status: "BOOKED",
+      },
+    });
+    await prisma.booking.create({
+      data: { slotId: bookedSlot.id, learnerId: learner.id, status: "CONFIRMED" },
+    });
+
+    const resEditBooked = await putSlot(tokenFor(tutor), bookedSlot.id, {
+      subject: "Chemistry 101",
+      start: startUtc.toISOString(),
+      end: endUtc.toISOString(),
+      mode: "ONLINE",
+    });
+    expect(resEditBooked.status).toBe(409);
+    expect(resEditBooked.body.error).toBe("SLOT_BOOKED");
+
+    // Free slot can be deleted with 204
+    const freeSlot = await prisma.slot.create({
+      data: {
+        tutorId: tutor.id,
+        subject: "Biology",
+        startUtc: new Date(Date.now() + 72 * HOUR),
+        endUtc: new Date(Date.now() + 73 * HOUR),
+        mode: "ONLINE",
+      },
+    });
+
+    const resDeleteFree = await deleteSlot(tokenFor(tutor), freeSlot.id);
+    expect(resDeleteFree.status).toBe(204);
+
+    const deletedFromDb = await prisma.slot.findUnique({ where: { id: freeSlot.id } });
+    expect(deletedFromDb).toBeNull();
+  });
+
+  it("TC-SLOT-04: another tutor edits or deletes -> 403 FORBIDDEN; learner role -> 403; no token -> 401; unknown id -> 404 SLOT_NOT_FOUND; bad uuid -> 400", async () => {
+    const tutor1 = await makeUser("TUTOR");
+    const tutor2 = await makeUser("TUTOR");
+    const learner = await makeUser("LEARNER");
+
+    const startUtc = new Date(Date.now() + 48 * HOUR);
+    const endUtc = new Date(startUtc.getTime() + 1 * HOUR);
+    const slot = await prisma.slot.create({
+      data: { tutorId: tutor1.id, subject: "History", startUtc, endUtc, mode: "ONLINE" },
+    });
+
+    const editBody = {
+      subject: "World History",
+      start: startUtc.toISOString(),
+      end: endUtc.toISOString(),
+      mode: "ONLINE",
+    };
+
+    // Another tutor
+    const resOtherEdit = await putSlot(tokenFor(tutor2), slot.id, editBody);
+    expect(resOtherEdit.status).toBe(403);
+    expect(resOtherEdit.body.error).toBe("FORBIDDEN");
+
+    const resOtherDelete = await deleteSlot(tokenFor(tutor2), slot.id);
+    expect(resOtherDelete.status).toBe(403);
+    expect(resOtherDelete.body.error).toBe("FORBIDDEN");
+
+    // Learner role
+    const resLearnerEdit = await putSlot(tokenFor(learner), slot.id, editBody);
+    expect(resLearnerEdit.status).toBe(403);
+    expect(resLearnerEdit.body.error).toBe("FORBIDDEN");
+
+    const resLearnerDelete = await deleteSlot(tokenFor(learner), slot.id);
+    expect(resLearnerDelete.status).toBe(403);
+    expect(resLearnerDelete.body.error).toBe("FORBIDDEN");
+
+    // No token
+    const resNoTokenEdit = await putSlot(null, slot.id, editBody);
+    expect(resNoTokenEdit.status).toBe(401);
+    expect(resNoTokenEdit.body.error).toBe("UNAUTHORIZED");
+
+    const resNoTokenDelete = await deleteSlot(null, slot.id);
+    expect(resNoTokenDelete.status).toBe(401);
+    expect(resNoTokenDelete.body.error).toBe("UNAUTHORIZED");
+
+    // Unknown id
+    const unknownId = "00000000-0000-4000-8000-000000000000";
+    const resUnknownEdit = await putSlot(tokenFor(tutor1), unknownId, editBody);
+    expect(resUnknownEdit.status).toBe(404);
+    expect(resUnknownEdit.body.error).toBe("SLOT_NOT_FOUND");
+
+    const resUnknownDelete = await deleteSlot(tokenFor(tutor1), unknownId);
+    expect(resUnknownDelete.status).toBe(404);
+    expect(resUnknownDelete.body.error).toBe("SLOT_NOT_FOUND");
+
+    // Bad uuid
+    const resBadUuidEdit = await putSlot(tokenFor(tutor1), "not-a-uuid", editBody);
+    expect(resBadUuidEdit.status).toBe(400);
+    expect(resBadUuidEdit.body.error).toBe("INVALID_INPUT");
+
+    const resBadUuidDelete = await deleteSlot(tokenFor(tutor1), "not-a-uuid");
+    expect(resBadUuidDelete.status).toBe(400);
+    expect(resBadUuidDelete.body.error).toBe("INVALID_INPUT");
+  });
+
+  it("TC-SLOT-04: end <= start -> 400 INVALID_TIME_RANGE; past start -> 400 SLOT_IN_PAST", async () => {
+    const tutor = await makeUser("TUTOR");
+
+    const startUtc = new Date(Date.now() + 48 * HOUR);
+    const endUtc = new Date(startUtc.getTime() + 1 * HOUR);
+    const slot = await prisma.slot.create({
+      data: { tutorId: tutor.id, subject: "Logic", startUtc, endUtc, mode: "ONLINE" },
+    });
+
+    // End <= start
+    const resEndBeforeStart = await putSlot(tokenFor(tutor), slot.id, {
+      subject: "Logic",
+      start: startUtc.toISOString(),
+      end: new Date(startUtc.getTime() - 1 * HOUR).toISOString(),
+      mode: "ONLINE",
+    });
+    expect(resEndBeforeStart.status).toBe(400);
+    expect(resEndBeforeStart.body.error).toBe("INVALID_TIME_RANGE");
+
+    // Start in past
+    const resPastStart = await putSlot(tokenFor(tutor), slot.id, {
+      subject: "Logic",
+      start: new Date(Date.now() - 2 * HOUR).toISOString(),
+      end: new Date(Date.now() - 1 * HOUR).toISOString(),
+      mode: "ONLINE",
+    });
+    expect(resPastStart.status).toBe(400);
+    expect(resPastStart.body.error).toBe("SLOT_IN_PAST");
+  });
+
+  it("TC-SLOT-04: a deleted slot no longer blocks creating a slot at the same time, and cannot be booked", async () => {
+    const tutor = await makeUser("TUTOR");
+    const learner = await makeUser("LEARNER");
+
+    const startUtc = new Date(Date.now() + 48 * HOUR);
+    const endUtc = new Date(startUtc.getTime() + 1 * HOUR);
+
+    // Create a booked slot and soft-delete it
+    const slot = await prisma.slot.create({
+      data: {
+        tutorId: tutor.id,
+        subject: "Databases",
+        startUtc,
+        endUtc,
+        mode: "ONLINE",
+        status: "BOOKED",
+      },
+    });
+    await prisma.booking.create({
+      data: { slotId: slot.id, learnerId: learner.id, status: "CONFIRMED" },
+    });
+
+    const resDel = await deleteSlot(tokenFor(tutor), slot.id);
+    expect(resDel.status).toBe(204);
+
+    // Recreating at the exact same time succeeds (deleted slot does not block it)
+    const resNewSlot = await postSlot(tokenFor(tutor), {
+      subject: "New Databases Slot",
+      start: startUtc.toISOString(),
+      end: endUtc.toISOString(),
+      mode: "ONLINE",
+    });
+    expect(resNewSlot.status).toBe(201);
+
+    // Booking the deleted slot is rejected
+    const bookRes = await request(app)
+      .post("/api/bookings")
+      .set("Authorization", `Bearer ${tokenFor(learner)}`)
+      .send({ slotId: slot.id });
+    expect(bookRes.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it("TC-SLOT-04: worker: SLOT_CANCELLED is sent for a CANCELLED booking; CONFIRMATION is still skipped for a CANCELLED booking", async () => {
+    const tutor = await makeUser("TUTOR");
+    const learner = await makeUser("LEARNER");
+
+    const slot = await prisma.slot.create({
+      data: {
+        tutorId: tutor.id,
+        subject: "Networking",
+        startUtc: new Date(Date.now() + 48 * HOUR),
+        endUtc: new Date(Date.now() + 49 * HOUR),
+        mode: "ONLINE",
+        status: "CANCELLED",
+      },
+    });
+
+    const booking = await prisma.booking.create({
+      data: {
+        slotId: slot.id,
+        learnerId: learner.id,
+        status: "CANCELLED",
+      },
+    });
+
+    const sendMailSpy = jest.spyOn(mailer, "sendMail").mockResolvedValue({});
+
+    // 1) SLOT_CANCELLED job for cancelled booking -> must be sent
+    const jobCancel = {
+      data: { bookingId: booking.id, type: "SLOT_CANCELLED" },
+      attemptsMade: 0,
+      opts: { attempts: 4 },
+    };
+    const resCancel = await processEmail(jobCancel);
+    expect(resCancel).toEqual({ sent: true });
+    expect(sendMailSpy).toHaveBeenCalledTimes(1);
+
+    // Verify emailLog created
+    const log = await prisma.emailLog.findFirst({
+      where: { bookingId: booking.id, type: "SLOT_CANCELLED" },
+    });
+    expect(log).not.toBeNull();
+    expect(log.status).toBe("SENT");
+
+    // 2) CONFIRMATION job for cancelled booking -> must be skipped
+    sendMailSpy.mockClear();
+    const jobConfirm = {
+      data: { bookingId: booking.id, type: "CONFIRMATION" },
+      attemptsMade: 0,
+      opts: { attempts: 4 },
+    };
+    const resConfirm = await processEmail(jobConfirm);
+    expect(resConfirm).toEqual({ skipped: "booking-not-confirmed" });
+    expect(sendMailSpy).not.toHaveBeenCalled();
   });
 });

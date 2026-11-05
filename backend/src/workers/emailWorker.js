@@ -2,7 +2,7 @@ const { Worker } = require("bullmq");
 const prisma = require("../lib/prisma");
 const { getConnection } = require("../lib/redis");
 const { EMAIL_QUEUE } = require("../queues/emailQueue");
-const { sendMail } = require("../lib/mailer");
+const mailer = require("../lib/mailer");
 const { buildEmail } = require("../services/emailTemplates");
 
 // Handles one job. Throwing makes BullMQ retry it with the backoff set on the queue.
@@ -14,11 +14,14 @@ async function processEmail(job) {
     include: { learner: true, slot: { include: { tutor: true } } },
   });
 
-  // Skipped on cancel (PTS-32): a cancelled or deleted booking never gets an email.
+  // Skipped on cancel (PTS-32): a cancelled or deleted booking never gets an email,
+  // except for SLOT_CANCELLED notifications notifying learners of tutor cancellations (PTS-26).
   if (!booking) return { skipped: "booking-not-found" };
-  if (booking.status !== "CONFIRMED") return { skipped: "booking-not-confirmed" };
+  if (type !== "SLOT_CANCELLED" && booking.status !== "CONFIRMED") {
+    return { skipped: "booking-not-confirmed" };
+  }
 
-  await sendMail(buildEmail(type, booking));
+  await mailer.sendMail(buildEmail(type, booking));
 
   await prisma.emailLog.create({
     data: { bookingId, type, status: "SENT", attempts: job.attemptsMade + 1 },

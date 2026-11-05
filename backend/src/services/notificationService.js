@@ -65,24 +65,40 @@ async function cancelReminders(bookingId) {
   }
 }
 
-  // Sends the "verify your email" link right after registration (SRS F-002, TC-AUTH-02).
-  // `token` is the raw token; only its hash is stored in the database. Never throws:
-  // a failed email must not make registration fail.
-  async function sendVerificationEmail(user, token) {
-    if (!queueEnabled()) return;
-    try {
-      const base = process.env.FRONTEND_URL || "http://localhost:3000";
-      const link = `${base}/verify-email?token=${encodeURIComponent(token)}`;
-      await sendMail(buildVerificationEmail(user, link));
-    } catch (err) {
-      console.error("sendVerificationEmail failed:", err.message);
-    }
+// Enqueues an email notifying the learner that their booked slot was cancelled by the tutor (PTS-26).
+// Never throws: a failed queue call must not fail slot deletion.
+async function enqueueSlotCancelled(bookingId) {
+  if (!queueEnabled()) return;
+  try {
+    await getEmailQueue().add(
+      "SLOT_CANCELLED",
+      { bookingId, type: "SLOT_CANCELLED" },
+      { jobId: `slot-cancelled-${bookingId}` }
+    );
+  } catch (err) {
+    console.error("enqueueSlotCancelled failed:", err.message);
   }
+}
 
-  module.exports = {
-    enqueueConfirmation,
-    scheduleReminders,
-    cancelReminders,
-    sendVerificationEmail,
-    REMINDERS,
-  };
+// Sends the "verify your email" link right after registration (SRS F-002, TC-AUTH-02).
+// `token` is the raw token; only its hash is stored in the database. Never throws:
+// a failed email must not make registration fail.
+async function sendVerificationEmail(user, token) {
+  if (!queueEnabled()) return;
+  try {
+    const base = process.env.FRONTEND_URL || "http://localhost:3000";
+    const link = `${base}/verify-email?token=${encodeURIComponent(token)}`;
+    await sendMail(buildVerificationEmail(user, link));
+  } catch (err) {
+    console.error("sendVerificationEmail failed:", err.message);
+  }
+}
+
+module.exports = {
+  enqueueConfirmation,
+  scheduleReminders,
+  cancelReminders,
+  enqueueSlotCancelled,
+  sendVerificationEmail,
+  REMINDERS,
+};
