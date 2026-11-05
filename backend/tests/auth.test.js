@@ -67,6 +67,9 @@ describe("Auth Registration - TC-AUTH-01 (F-001, SR-002)", () => {
     expect(storedHash.startsWith("$2a$12$") || storedHash.startsWith("$2b$12$")).toBe(true);
     const passwordMatches = await bcrypt.compare("StrongPassword123!", storedHash);
     expect(passwordMatches).toBe(true);
+    expect(createCall.data.verificationTokenHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(createCall.data.verificationTokenExpiresAt).toBeInstanceOf(Date);
+    expect(createCall.data.verificationTokenExpiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("rejects registration with duplicate email and returns 409 Conflict", async () => {
@@ -291,5 +294,84 @@ describe("Auth Login and Authorization - TC-AUTH-03 (F-003, SR-003)", () => {
 
     expect(res.status).toBe(401);
     expect(res.body.error).toBe("UNAUTHORIZED");
+  });
+});
+
+describe("Email Verification - TC-AUTH-02 (F-002)", () => {
+  const originalJwtSecret = process.env.JWT_SECRET;
+
+  beforeAll(() => {
+    process.env.JWT_SECRET = "test-only-jwt-secret";
+  });
+
+  afterAll(() => {
+    if (originalJwtSecret === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = originalJwtSecret;
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("verifies an account with a valid, unexpired token and consumes the token", async () => {
+    const authService = require("../src/services/authService");
+    const verification = authService.createVerificationToken();
+    prisma.user.findUnique.mockResolvedValue({
+      id: "user-uuid-3",
+      name: "New Learner",
+      email: "new@example.edu",
+      role: "LEARNER",
+      verified: false,
+      suspended: false,
+      subjects: [],
+      bio: null,
+      verificationTokenExpiresAt: verification.expiresAt,
+    });
+    prisma.user.update.mockResolvedValue({
+      id: "user-uuid-3",
+      name: "New Learner",
+      email: "new@example.edu",
+      role: "LEARNER",
+      verified: true,
+      suspended: false,
+      subjects: [],
+      bio: null,
+    });
+
+    const res = await request(app)
+      .post("/api/auth/verify-email")
+      .send({ token: verification.token });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.verified).toBe(true);
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { verificationTokenHash: verification.tokenHash },
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: "user-uuid-3" },
+      data: {
+        verified: true,
+        verificationTokenHash: null,
+        verificationTokenExpiresAt: null,
+      },
+    });
+  });
+
+  it("rejects an expired verification token", async () => {
+    const authService = require("../src/services/authService");
+    const verification = authService.createVerificationToken();
+    prisma.user.findUnique.mockResolvedValue({
+      id: "user-uuid-4",
+      verified: false,
+      verificationTokenExpiresAt: new Date(Date.now() - 1000),
+    });
+
+    const res = await request(app)
+      .post("/api/auth/verify-email")
+      .send({ token: verification.token });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("VERIFICATION_TOKEN_EXPIRED");
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 });

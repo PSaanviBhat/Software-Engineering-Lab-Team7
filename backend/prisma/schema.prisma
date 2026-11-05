@@ -35,6 +35,8 @@ model User {
   passwordHash String
   role         Role      @default(LEARNER)
   verified     Boolean   @default(false)
+  verificationTokenHash      String?  @unique
+  verificationTokenExpiresAt DateTime?
   suspended    Boolean   @default(false)
   subjects     String[]
   bio          String?

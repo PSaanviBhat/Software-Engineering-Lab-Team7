@@ -2,6 +2,14 @@ const prisma = require("../lib/prisma");
 const AppError = require("../lib/AppError");
 
 async function createBooking({ learnerId, slotId, note }) {
+  const learner = await prisma.user.findUnique({
+    where: { id: learnerId },
+    select: { verified: true },
+  });
+  if (!learner || !learner.verified) {
+    throw new AppError(403, "EMAIL_NOT_VERIFIED", "Verify your email before booking");
+  }
+
   const slot = await prisma.slot.findUnique({ where: { id: slotId } });
   if (!slot) throw new AppError(404, "SLOT_NOT_FOUND", "Slot not found");
   if (slot.tutorId === learnerId) {
@@ -27,4 +35,30 @@ async function createBooking({ learnerId, slotId, note }) {
   };
 }
 
-module.exports = { createBooking };
+async function listMyBookings(learnerId) {
+  const bookings = await prisma.booking.findMany({
+    where: { learnerId, status: "CONFIRMED" },
+    orderBy: { slot: { startUtc: "asc" } },
+    include: {
+      slot: {
+        include: {
+          tutor: { select: { id: true, name: true } },
+        },
+      },
+    },
+  });
+
+  return bookings.map((booking) => ({
+    bookingId: booking.id,
+    slotId: booking.slot.id,
+    subject: booking.slot.subject,
+    mode: booking.slot.mode,
+    link: booking.slot.link,
+    tutor: booking.slot.tutor,
+    start: booking.slot.startUtc.toISOString(),
+    end: booking.slot.endUtc.toISOString(),
+    status: booking.status,
+  }));
+}
+
+module.exports = { createBooking, listMyBookings };
