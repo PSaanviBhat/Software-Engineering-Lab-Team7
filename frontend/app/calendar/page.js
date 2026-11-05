@@ -27,6 +27,7 @@ export default function CalendarPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [bookingError, setBookingError] = useState("");
+  const [alternatives, setAlternatives] = useState([]);
   const [bookingNotice, setBookingNotice] = useState("");
   const [isBooking, setIsBooking] = useState(false);
 
@@ -115,6 +116,7 @@ export default function CalendarPage() {
 
   const handleEventClick = (info) => {
     setBookingError("");
+    setAlternatives([]);
     setSelectedSlot({
       id: info.event.id,
       start: info.event.start,
@@ -123,7 +125,7 @@ export default function CalendarPage() {
     });
   };
 
-  const handleBook = async () => {
+  const handleBook = async (slotId = selectedSlot.id) => {
     const token = localStorage.getItem("token");
     if (!token) {
       setBookingError("Please sign in to book a slot.");
@@ -132,10 +134,11 @@ export default function CalendarPage() {
 
     setIsBooking(true);
     setBookingError("");
+    setAlternatives([]);
     try {
       await axios.post(
         `${apiUrl}/bookings`,
-        { slotId: selectedSlot.id },
+        { slotId },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setSelectedSlot(null);
@@ -146,6 +149,7 @@ export default function CalendarPage() {
       setBookingError(
         bookingErrors[code] || err.response?.data?.message || "Could not book this slot."
       );
+      setAlternatives(err.response?.data?.alternatives || []);
       if (code === "SLOT_TAKEN") fetchSlots();
     } finally {
       setIsBooking(false);
@@ -328,6 +332,27 @@ export default function CalendarPage() {
               </p>
             )}
 
+            {alternatives.length > 0 && (
+              <div className="mt-4">
+                <p className="text-sm font-medium text-gray-700">Book one of these instead:</p>
+                <ul className="mt-2 space-y-2">
+                  {alternatives.map((alt) => (
+                    <li key={alt.slotId}>
+                      <button
+                        type="button"
+                        onClick={() => handleBook(alt.slotId)}
+                        disabled={isBooking}
+                        className="w-full text-left py-2 px-3 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {new Date(alt.start).toLocaleString()} –{" "}
+                        {new Date(alt.end).toLocaleTimeString()} · {alt.tutorName}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
@@ -339,7 +364,7 @@ export default function CalendarPage() {
               {selectedSlot.status === "FREE" ? (
                 <button
                   type="button"
-                  onClick={handleBook}
+                  onClick={() => handleBook()}
                   disabled={isBooking}
                   className="py-2 px-4 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
                 >
