@@ -64,8 +64,57 @@ async function createBooking({ learnerId, slotId, note }) {
     }, TX_OPTIONS);
   } catch (err) {
     // Backstop: Booking_slotId_active_key rejected a second CONFIRMED booking for the slot.
-    if (err.code === "P2002") throw new AppError(409, "SLOT_TAKEN", "Slot is already booked");
-    throw err;
+    const error =
+      err.code === "P2002" ? new AppError(409, "SLOT_TAKEN", "Slot is already booked") : err;
+    if (error.code === "SLOT_TAKEN" || error.code === "LEARNER_OVERLAP") {
+      error.extra = { ...error.extra, alternatives: await findAlternatives(learnerId, slotId) };
+    }
+    throw error;
+  }
+}
+
+// Up to 3 nearest free slots for the same subject (SRS P2P-F-015): the same tutor first,
+// then by distance in time from the slot the learner wanted. Future slots only, never the
+// learner's own slots, never ones that overlap the learner's confirmed bookings.
+// Runs after the booking transaction has rolled back; a failure here must not hide the 409.
+async function findAlternatives(learnerId, slotId) {
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT s.id, s."tutorId", u.name AS "tutorName", s.subject,
+             s."startUtc", s."endUtc", s.mode
+      FROM "Slot" s
+      JOIN "User" u ON u.id = s."tutorId"
+      JOIN "Slot" wanted ON wanted.id = ${slotId}
+      WHERE s.status = 'FREE'
+        AND s.subject = wanted.subject
+        AND s.id <> wanted.id
+        AND s."tutorId" <> ${learnerId}
+        AND s."startUtc" > (now() AT TIME ZONE 'UTC')
+        AND NOT EXISTS (
+          SELECT 1 FROM "Booking" b
+          JOIN "Slot" bs ON bs.id = b."slotId"
+          WHERE b."learnerId" = ${learnerId}
+            AND b.status = 'CONFIRMED'
+            AND bs."startUtc" < s."endUtc"
+            AND bs."endUtc" > s."startUtc"
+        )
+      ORDER BY (s."tutorId" = wanted."tutorId") DESC,
+               ABS(EXTRACT(EPOCH FROM (s."startUtc" - wanted."startUtc"))) ASC,
+               s."startUtc" ASC
+      LIMIT 3`;
+
+    return rows.map((r) => ({
+      slotId: r.id,
+      tutorId: r.tutorId,
+      tutorName: r.tutorName,
+      subject: r.subject,
+      start: r.startUtc.toISOString(),
+      end: r.endUtc.toISOString(),
+      mode: r.mode,
+    }));
+  } catch (err) {
+    console.error("findAlternatives failed:", err.message);
+    return [];
   }
 }
 
