@@ -49,4 +49,28 @@ router.delete("/:id", auth, async (req, res) => {
 
   res.json(result);});
 
+const rescheduleSchema = z.object({ newSlotId: z.uuid() });
+
+router.patch("/:id", auth, async (req, res) => {
+  const id = z.uuid().safeParse(req.params.id);
+  const body = rescheduleSchema.safeParse(req.body);
+  if (!id.success || !body.success) {
+    throw new AppError(400, "INVALID_INPUT", "Invalid reschedule request");
+  }
+
+  const result = await bookingService.rescheduleBooking({
+    learnerId: req.user.id,
+    bookingId: id.data,
+    newSlotId: body.data.newSlotId,
+  });
+
+  // Same as cancel + book: drop the old booking's reminders, then confirm the new one.
+  // Not awaited on purpose; both functions catch their own errors.
+  cancelReminders(result.oldBookingId);
+  enqueueConfirmation(result.bookingId);
+  scheduleReminders(result.bookingId, result.start);
+
+  res.json(result);
+});
+
 module.exports = router;

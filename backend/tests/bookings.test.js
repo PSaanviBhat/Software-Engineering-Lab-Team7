@@ -41,6 +41,12 @@ async function makeSlot(tutorId, startOffsetHours = 48, durationHours = 1, subje
 const cancel = (user, bookingId) =>
   request(app).delete(`/api/bookings/${bookingId}`).set("Authorization", `Bearer ${tokenFor(user)}`);
 
+const reschedule = (user, bookingId, newSlotId) =>
+  request(app)
+    .patch(`/api/bookings/${bookingId}`)
+    .set("Authorization", `Bearer ${tokenFor(user)}`)
+    .send({ newSlotId });
+
 const book = (user, slotId) =>
   request(app).post("/api/bookings").set("Authorization", `Bearer ${tokenFor(user)}`).send({ slotId });
 
@@ -444,3 +450,208 @@ describe("TC-BOOK-04: alternatives on a booking conflict (F-015)", () => {
   });
 });
 
+describe("PATCH /api/bookings/:id (reschedule)", () => {
+  async function setup(oldOffsetHours = 48) {
+    const learner = await makeUser();
+    const oldSlot = await makeSlot((await makeUser("TUTOR")).id, oldOffsetHours);
+    const booked = await book(learner, oldSlot.id);
+    return { learner, oldSlot, bookingId: booked.body.bookingId };
+  }
+  const slotStatus = async (id) => (await prisma.slot.findUnique({ where: { id } })).status;
+  const bookingStatus = async (id) => (await prisma.booking.findUnique({ where: { id } })).status;
+
+  async function expectUnchanged({ learner, oldSlot, bookingId }) {
+    expect(await bookingStatus(bookingId)).toBe("CONFIRMED");
+    expect(await slotStatus(oldSlot.id)).toBe("BOOKED");
+    const active = await prisma.booking.count({ where: { learnerId: learner.id, status: "CONFIRMED" } });
+    expect(active).toBe(1);
+  }
+
+  it("TC-BOOK-06: moves the booking to the new slot and frees the old one", async () => {
+    const ctx = await setup();
+    const newSlot = await makeSlot((await makeUser("TUTOR")).id, 72);
+
+    const res = await reschedule(ctx.learner, ctx.bookingId, newSlot.id);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      bookingId: expect.any(String),
+      oldBookingId: ctx.bookingId,
+      slotId: newSlot.id,
+      start: newSlot.startUtc.toISOString(),
+      end: newSlot.endUtc.toISOString(),
+      status: "CONFIRMED",
+    });
+    expect(res.body.bookingId).not.toBe(ctx.bookingId);
+    expect(await bookingStatus(ctx.bookingId)).toBe("CANCELLED");
+    expect(await bookingStatus(res.body.bookingId)).toBe("CONFIRMED");
+    expect(await slotStatus(ctx.oldSlot.id)).toBe("FREE");
+    expect(await slotStatus(newSlot.id)).toBe("BOOKED");
+
+    expect((await book(await makeUser(), ctx.oldSlot.id)).status).toBe(201);
+  });
+
+  it("keeps the note of the original booking", async () => {
+    const learner = await makeUser();
+    const oldSlot = await makeSlot((await makeUser("TUTOR")).id, 48);
+    const newSlot = await makeSlot((await makeUser("TUTOR")).id, 72);
+    const booked = await request(app)
+      .post("/api/bookings")
+      .set("Authorization", `Bearer ${tokenFor(learner)}`)
+      .send({ slotId: oldSlot.id, note: "Please cover joins" });
+
+    const res = await reschedule(learner, booked.body.bookingId, newSlot.id);
+
+    const moved = await prisma.booking.findUnique({ where: { id: res.body.bookingId } });
+    expect(moved.note).toBe("Please cover joins");
+  });
+
+  it("TC-BOOK-06: a failed reschedule (new slot taken) leaves the original booking intact", async () => {
+    const ctx = await setup();
+    const taken = await makeSlot((await makeUser("TUTOR")).id, 72);
+    await book(await makeUser(), taken.id);
+
+    const res = await reschedule(ctx.learner, ctx.bookingId, taken.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("SLOT_TAKEN");
+    await expectUnchanged(ctx);
+  });
+
+  it("TC-BOOK-06: a failed reschedule (overlap with another booking) leaves everything intact", async () => {
+    const ctx = await setup(48);
+    const other = await makeSlot((await makeUser("TUTOR")).id, 100);
+    const otherBooking = await book(ctx.learner, other.id);
+    const clashing = await makeSlot((await makeUser("TUTOR")).id, 100.5);
+
+    const res = await reschedule(ctx.learner, ctx.bookingId, clashing.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("LEARNER_OVERLAP");
+    expect(res.body.clashingBookingId).toBe(otherBooking.body.bookingId);
+    expect(await bookingStatus(ctx.bookingId)).toBe("CONFIRMED");
+    expect(await slotStatus(ctx.oldSlot.id)).toBe("BOOKED");
+    expect(await slotStatus(clashing.id)).toBe("FREE");
+  });
+
+  it("does not treat the booking being moved as a clash with itself", async () => {
+    const ctx = await setup(48);
+    const overlappingSelf = await makeSlot((await makeUser("TUTOR")).id, 48.5);
+
+    const res = await reschedule(ctx.learner, ctx.bookingId, overlappingSelf.id);
+
+    expect(res.status).toBe(200);
+    expect(await slotStatus(ctx.oldSlot.id)).toBe("FREE");
+    expect(await slotStatus(overlappingSelf.id)).toBe("BOOKED");
+  });
+
+  it("rejects the new slot with the same rules as booking, changing nothing", async () => {
+    const ctx = await setup();
+    const learnerOwnSlotTutor = await makeUser("TUTOR");
+    const tutorsOldSlot = await makeSlot((await makeUser("TUTOR")).id, 60);
+    const tutorBooking = await book(learnerOwnSlotTutor, tutorsOldSlot.id);
+    expect(tutorBooking.status).toBe(201);
+    const ownSlot = await makeSlot(learnerOwnSlotTutor.id, 80);
+    const past = await makeSlot((await makeUser("TUTOR")).id, -5);
+
+    const own = await reschedule(learnerOwnSlotTutor, tutorBooking.body.bookingId, ownSlot.id);
+    expect(own.status).toBe(403);
+    expect(own.body.error).toBe("OWN_SLOT");
+
+    const inPast = await reschedule(ctx.learner, ctx.bookingId, past.id);
+    expect(inPast.status).toBe(400);
+    expect(inPast.body.error).toBe("SLOT_IN_PAST");
+    await expectUnchanged(ctx);
+  });
+
+  it("returns 404 for an unknown new slot or booking, and 400 for the same slot or bad input", async () => {
+    const ctx = await setup();
+    const ghost = "00000000-0000-4000-8000-000000000000";
+
+    const noSlot = await reschedule(ctx.learner, ctx.bookingId, ghost);
+    expect(noSlot.status).toBe(404);
+    expect(noSlot.body.error).toBe("SLOT_NOT_FOUND");
+
+    const noBooking = await reschedule(ctx.learner, ghost, ctx.oldSlot.id);
+    expect(noBooking.status).toBe(404);
+    expect(noBooking.body.error).toBe("BOOKING_NOT_FOUND");
+
+    expect((await reschedule(ctx.learner, ctx.bookingId, ctx.oldSlot.id)).status).toBe(400);
+    expect((await reschedule(ctx.learner, ctx.bookingId, "nope")).status).toBe(400);
+    await expectUnchanged(ctx);
+  });
+
+  it("returns 403 when another learner tries to reschedule", async () => {
+    const ctx = await setup();
+    const newSlot = await makeSlot((await makeUser("TUTOR")).id, 72);
+
+    const res = await reschedule(await makeUser(), ctx.bookingId, newSlot.id);
+
+    expect(res.status).toBe(403);
+    await expectUnchanged(ctx);
+    expect(await slotStatus(newSlot.id)).toBe("FREE");
+  });
+
+  it("applies the cancellation window: 409 TOO_LATE_TO_CANCEL less than 2 h before the old slot", async () => {
+    const ctx = await setup(1);
+    const newSlot = await makeSlot((await makeUser("TUTOR")).id, 72);
+
+    const res = await reschedule(ctx.learner, ctx.bookingId, newSlot.id);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("TOO_LATE_TO_CANCEL");
+    await expectUnchanged(ctx);
+    expect(await slotStatus(newSlot.id)).toBe("FREE");
+  });
+
+  it("returns 409 ALREADY_CANCELLED for a cancelled booking and 401 without a token", async () => {
+    const ctx = await setup();
+    const newSlot = await makeSlot((await makeUser("TUTOR")).id, 72);
+    await cancel(ctx.learner, ctx.bookingId);
+
+    const res = await reschedule(ctx.learner, ctx.bookingId, newSlot.id);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("ALREADY_CANCELLED");
+
+    const anon = await request(app).patch(`/api/bookings/${ctx.bookingId}`).send({ newSlotId: newSlot.id });
+    expect(anon.status).toBe(401);
+  });
+
+  it("TC-BOOK-06: two simultaneous reschedules into one slot give exactly one success", async () => {
+    const [a, b] = [await setup(48), await setup(50)];
+    const target = await makeSlot((await makeUser("TUTOR")).id, 96);
+
+    const results = await Promise.all([
+      reschedule(a.learner, a.bookingId, target.id),
+      reschedule(b.learner, b.bookingId, target.id),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(results.find((r) => r.status === 409).body.error).toBe("SLOT_TAKEN");
+    const winner = results.find((r) => r.status === 200);
+    const loserCtx = winner === results[0] ? b : a;
+    const winnerCtx = winner === results[0] ? a : b;
+    await expectUnchanged(loserCtx);
+    expect(await slotStatus(winnerCtx.oldSlot.id)).toBe("FREE");
+    expect(await prisma.booking.count({ where: { slotId: target.id, status: "CONFIRMED" } })).toBe(1);
+  });
+
+  it("one booking rescheduled twice at once ends with a single confirmed booking", async () => {
+    const ctx = await setup();
+    const [x, y] = [
+      await makeSlot((await makeUser("TUTOR")).id, 72),
+      await makeSlot((await makeUser("TUTOR")).id, 96),
+    ];
+
+    const results = await Promise.all([
+      reschedule(ctx.learner, ctx.bookingId, x.id),
+      reschedule(ctx.learner, ctx.bookingId, y.id),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(results.find((r) => r.status === 409).body.error).toBe("ALREADY_CANCELLED");
+    const active = await prisma.booking.count({ where: { learnerId: ctx.learner.id, status: "CONFIRMED" } });
+    expect(active).toBe(1);
+    expect(await slotStatus(ctx.oldSlot.id)).toBe("FREE");
+  });
+});
