@@ -51,4 +51,16 @@ function buildEmail(type, booking) {
   };
 }
 
-module.exports = { buildEmail, formatWhen };
+// Verification email (SRS F-002): a link that expires after 24 hours.
+function buildVerificationEmail({ name, email }, link) {
+  return {
+    to: email,
+    subject: "Verify your email address",
+    html: `<p>Hi ${esc(name)},</p>
+    <p>Please confirm your email address to start booking sessions. The link works for 24 hours.</p>
+    <p><a href="${esc(link)}">Verify my email</a></p>
+    <p>If the button does not work, copy this address into your browser:<br>${esc(link)}</p>`,
+  };
+}
+
+module.exports = { buildEmail, buildVerificationEmail, formatWhen };

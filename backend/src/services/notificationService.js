@@ -1,4 +1,6 @@
 const { getEmailQueue } = require("../queues/emailQueue");
+const { sendMail } = require("../lib/mailer");
+const { buildVerificationEmail } = require("./emailTemplates");
 
 const HOUR = 60 * 60 * 1000;
 
@@ -63,4 +65,24 @@ async function cancelReminders(bookingId) {
   }
 }
 
-module.exports = { enqueueConfirmation, scheduleReminders, cancelReminders, REMINDERS };
+  // Sends the "verify your email" link right after registration (SRS F-002, TC-AUTH-02).
+  // `token` is the raw token; only its hash is stored in the database. Never throws:
+  // a failed email must not make registration fail.
+  async function sendVerificationEmail(user, token) {
+    if (!queueEnabled()) return;
+    try {
+      const base = process.env.FRONTEND_URL || "http://localhost:3000";
+      const link = `${base}/verify-email?token=${encodeURIComponent(token)}`;
+      await sendMail(buildVerificationEmail(user, link));
+    } catch (err) {
+      console.error("sendVerificationEmail failed:", err.message);
+    }
+  }
+
+  module.exports = {
+    enqueueConfirmation,
+    scheduleReminders,
+    cancelReminders,
+    sendVerificationEmail,
+    REMINDERS,
+  };

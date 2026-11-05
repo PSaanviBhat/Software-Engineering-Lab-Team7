@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const prisma = require("../lib/prisma");
 const AppError = require("../lib/AppError");
+const { sendVerificationEmail } = require("./notificationService");
 
 const loginSchema = z.object({
   email: z.string().trim().email("Invalid email address").toLowerCase(),
@@ -136,7 +137,8 @@ async function register(input) {
       subjects: [],
     },
   });
-
+  // Not awaited on purpose: registration must not wait for, or fail because of, the mail server.
+  sendVerificationEmail(newUser, verification.token);
   const token = signToken(newUser);
   return {
     token,
