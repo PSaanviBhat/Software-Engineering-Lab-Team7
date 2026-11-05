@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -59,3 +60,14 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      
+  smoke-staging:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for Render to redeploy
+        run: sleep 120
+      - name: Smoke test staging
+        run: bash scripts/smoke.sh "${{ secrets.STAGING_API_URL }}"
