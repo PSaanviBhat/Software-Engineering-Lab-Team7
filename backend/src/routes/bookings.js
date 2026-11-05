@@ -1,6 +1,7 @@
 const express = require("express");
 const { z } = require("zod");
 const tempAuth = require("../middleware/tempAuth");
+const auth = require("../middleware/auth");
 const AppError = require("../lib/AppError");
 const bookingService = require("../services/bookingService");
 
@@ -21,6 +22,15 @@ router.post("/", tempAuth, async (req, res) => {
     note: parsed.data.note,
   });
   res.status(201).json(result);
+});
+
+router.get("/me", auth, async (req, res, next) => {
+  try {
+    const result = await bookingService.listMyBookings(req.user.id);
+    res.json({ bookings: result });
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;
