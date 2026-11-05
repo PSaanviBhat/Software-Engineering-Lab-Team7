@@ -1,6 +1,5 @@
 const express = require("express");
 const authService = require("../services/authService");
-const { register } = require("../services/auth.service");
 const auth = require("../middleware/auth");
 
 const router = express.Router();
@@ -16,8 +15,26 @@ router.post("/login", async (req, res, next) => {
 
 router.post("/register", async (req, res, next) => {
   try {
-    const result = await register(req.body);
+    const result = await authService.register(req.body);
     res.status(201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/verify-email", async (req, res, next) => {
+  try {
+    const result = await authService.verifyEmail(req.body?.token);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/verify-email", async (req, res, next) => {
+  try {
+    const result = await authService.verifyEmail(req.query.token);
+    res.json(result);
   } catch (error) {
     next(error);
   }

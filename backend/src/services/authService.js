@@ -1,6 +1,7 @@
 const { z } = require("zod");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const prisma = require("../lib/prisma");
 const AppError = require("../lib/AppError");
 
@@ -22,6 +23,21 @@ const tutorProfileSchema = z.object({
     .max(10, "A tutor can list at most 10 subjects"),
   bio: z.string().trim().min(1, "Bio cannot be empty").max(500, "Bio is too long"),
 });
+
+const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+function hashVerificationToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function createVerificationToken() {
+  const token = crypto.randomBytes(32).toString("hex");
+  return {
+    token,
+    tokenHash: hashVerificationToken(token),
+    expiresAt: new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS),
+  };
+}
 
 function signToken(user) {
   if (!process.env.JWT_SECRET) {
@@ -87,7 +103,12 @@ async function login(input) {
 async function register(input) {
   const parseResult = registerSchema.safeParse(input);
   if (!parseResult.success) {
-    throw new AppError(400, "INVALID_INPUT", "Invalid registration input");
+    throw new AppError(
+      400,
+      "INVALID_INPUT",
+      "Invalid registration input",
+      parseResult.error.flatten().fieldErrors
+    );
   }
 
   const { name, email, password } = parseResult.data;
@@ -101,6 +122,7 @@ async function register(input) {
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
+  const verification = createVerificationToken();
 
   const newUser = await prisma.user.create({
     data: {
@@ -109,6 +131,8 @@ async function register(input) {
       passwordHash,
       role: "LEARNER",
       verified: false,
+      verificationTokenHash: verification.tokenHash,
+      verificationTokenExpiresAt: verification.expiresAt,
       subjects: [],
     },
   });
@@ -118,6 +142,39 @@ async function register(input) {
     token,
     user: sanitizeUser(newUser),
   };
+}
+
+async function verifyEmail(token) {
+  if (typeof token !== "string" || token.trim().length === 0) {
+    throw new AppError(400, "INVALID_VERIFICATION_TOKEN", "Invalid verification token");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { verificationTokenHash: hashVerificationToken(token.trim()) },
+  });
+
+  if (!user) {
+    throw new AppError(400, "INVALID_VERIFICATION_TOKEN", "Invalid verification token");
+  }
+
+  if (user.verified) {
+    throw new AppError(400, "EMAIL_ALREADY_VERIFIED", "Email is already verified");
+  }
+
+  if (!user.verificationTokenExpiresAt || user.verificationTokenExpiresAt <= new Date()) {
+    throw new AppError(400, "VERIFICATION_TOKEN_EXPIRED", "Verification token has expired");
+  }
+
+  const verifiedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      verified: true,
+      verificationTokenHash: null,
+      verificationTokenExpiresAt: null,
+    },
+  });
+
+  return { user: sanitizeUser(verifiedUser) };
 }
 
 async function updateTutorProfile(userId, input) {
@@ -154,4 +211,8 @@ module.exports = {
   updateTutorProfile,
   signToken,
   sanitizeUser,
+  createVerificationToken,
+  hashVerificationToken,
+  verifyEmail,
+  VERIFICATION_TOKEN_TTL_MS,
 };

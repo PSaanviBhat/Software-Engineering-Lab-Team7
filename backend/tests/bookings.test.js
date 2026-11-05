@@ -20,6 +20,7 @@ async function makeUser(role = "LEARNER") {
       email: `${role.toLowerCase()}-${run}-${seq++}@test.example.com`,
       passwordHash: "x",
       role,
+      verified: true,
     },
   });
   userIds.push(user.id);

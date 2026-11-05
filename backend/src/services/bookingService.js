@@ -5,6 +5,14 @@ const TX_OPTIONS = { maxWait: 10000, timeout: 10000 };
 const CANCEL_CUTOFF_MS = 2 * 60 * 60 * 1000;
 
 async function createBooking({ learnerId, slotId, note }) {
+  const learner = await prisma.user.findUnique({
+    where: { id: learnerId },
+    select: { verified: true },
+  });
+  if (!learner || !learner.verified) {
+    throw new AppError(403, "EMAIL_NOT_VERIFIED", "Verify your email before booking");
+  }
+
   try {
     return await prisma.$transaction(async (tx) => {
       // Serialise this learner's bookings so two parallel requests for overlapping
