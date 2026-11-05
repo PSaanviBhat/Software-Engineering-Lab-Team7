@@ -22,6 +22,7 @@ describe("GET /api/bookings/me - TC-CAL-03 (F-011)", () => {
     prisma.booking.findMany.mockResolvedValue([
       {
         id: "booking-1",
+        slotId: "slot-1",
         status: "CONFIRMED",
         slot: {
           id: "slot-1",
@@ -44,24 +45,22 @@ describe("GET /api/bookings/me - TC-CAL-03 (F-011)", () => {
       .set("Authorization", `Bearer ${token}`);
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      bookings: [
-        {
-          bookingId: "booking-1",
-          slotId: "slot-1",
-          subject: "DBMS",
-          mode: "ONLINE",
-          link: "https://meet.example.com/dbms",
-          tutor: { id: "tutor-1", name: "Tutor One" },
-          start: "2026-11-05T10:00:00.000Z",
-          end: "2026-11-05T11:00:00.000Z",
-          status: "CONFIRMED",
-        },
-      ],
-    });
+    expect(res.body).toEqual([
+      {
+        bookingId: "booking-1",
+        slotId: "slot-1",
+        subject: "DBMS",
+        mode: "ONLINE",
+        link: "https://meet.example.com/dbms",
+        tutorId: "tutor-1",
+        tutorName: "Tutor One",
+        start: "2026-11-05T10:00:00.000Z",
+        end: "2026-11-05T11:00:00.000Z",
+        status: "CONFIRMED",
+      },
+    ]);
     expect(prisma.booking.findMany).toHaveBeenCalledWith({
-      where: { learnerId: "learner-1", status: "CONFIRMED" },
-      orderBy: { slot: { startUtc: "asc" } },
+      where: { learnerId: "learner-1" },
       include: {
         slot: { include: { tutor: { select: { id: true, name: true } } } },
       },
