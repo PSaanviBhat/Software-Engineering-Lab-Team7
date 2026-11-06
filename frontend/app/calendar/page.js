@@ -109,6 +109,21 @@ export default function CalendarPage() {
       .catch(() => setTutors([]));
   }, []);
 
+  // Set aria-labels on calendar navigation icons for accessibility
+  useEffect(() => {
+    const updateIcons = () => {
+      document.querySelectorAll(".fc-icon-chevron-left").forEach((el) => {
+        if (!el.getAttribute("aria-label")) el.setAttribute("aria-label", "Previous");
+      });
+      document.querySelectorAll(".fc-icon-chevron-right").forEach((el) => {
+        if (!el.getAttribute("aria-label")) el.setAttribute("aria-label", "Next");
+      });
+    };
+    updateIcons();
+    const timer = setTimeout(updateIcons, 100);
+    return () => clearTimeout(timer);
+  }, [events]);
+
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
     setFilters((prev) => ({ ...prev, [name]: value }));
@@ -315,6 +330,7 @@ export default function CalendarPage() {
         <div
           role="dialog"
           aria-modal="true"
+          aria-label="Slot details"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
         >
           <div className="w-full max-w-md rounded-xl bg-white p-6 text-gray-900 shadow-lg">

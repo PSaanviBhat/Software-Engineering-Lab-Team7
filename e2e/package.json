@@ -1,0 +1,16 @@
+{
+  "name": "e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright E2E and accessibility test suite for Peer-to-Peer Tutoring Scheduler",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
+    "@playwright/test": "^1.49.0"
+  }
+}
