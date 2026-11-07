@@ -17,12 +17,13 @@ This document replaces the sample test case table in the STP (section 5.1) and t
 | Node (this run) | v24.10.0 (CI uses Node 20) |
 | Database | PostgreSQL 16 (Docker, `docker compose up -d db`), all 3 migrations applied |
 | Redis | Local Redis on port 6379 (needed by `emailRetry.redis.test.js`) |
-| E2E (Playwright) | **Not run** in this update. The 10 specs in `e2e/tests` need browsers plus the backend and frontend running, and no CI job runs them. |
-| Performance (k6) | **Not run** in this update. `perf/booking-load.js` needs k6 and a running backend. |
+| E2E (Playwright) | **Passed** in the PTS-44 run: 21 tests passed on 3 consecutive full runs (night of 5 to 6 November 2026), desktop and mobile Chromium. Results are in `System_Validation_Report.md` (section 5). Not re-run for this document; no CI job runs them. |
+| Performance (k6) | **Passed** in the PTS-44 run: p95 39.52 ms, 0.00% failed requests (`System_Validation_Report.md`, section 3). Most booking requests in that run were rate-limited, so the booking path was not measured under load. Not re-run for this document. |
 
 Status key:
 
 - **Passed**: an automated test exists and passed in the run above.
+- **Partial**: the test ran, but part of the expected result was not met or part of the requirement is not covered (see the note in the row).
 - **Failed**: an automated test exists and failed (none in this run).
 - **Not run**: a test exists in the repo but was not executed in this update.
 - **No test**: no test with this ID exists in the code.
@@ -62,21 +63,21 @@ Status key:
 
 | TC ID | Req ID | What it checks | Expected result | Test file | Status |
 |---|---|---|---|---|---|
-| TC-AUTH-01 | P2P-F-001 | Register with a new email, then again with the same email | First succeeds; second rejected | `auth.spec.js` | Not run |
-| TC-AUTH-03 | P2P-F-003 | Login with a wrong password | Error shown, no token stored | `auth.spec.js` | Not run |
-| TC-CAL-02 | P2P-F-010 | Calendar filter subject = DBMS | Only DBMS slots shown | `calendar.spec.js` | Not run |
-| TC-UX-02 | P2P-NF-005 | New user books from the calendar | Confirmed booking in 3 clicks or fewer | `calendar.spec.js` | Not run |
-| TC-BOOK-01 | P2P-F-012 | Learner books a free slot in the browser | Appears in My bookings; slot shows booked | `booking.spec.js` | Not run |
-| TC-BOOK-05 | P2P-F-016 | Learner cancels a booking more than 2 h away in the browser | Booking removed; slot free again | `booking.spec.js` | Not run |
-| TC-SLOT-02 | P2P-F-006 | Tutor creates weekly recurring slots (4 weeks) on `/my-slots` | 4 slots appear | `slots.spec.js` | Not run |
-| TC-SLOT-04 | P2P-F-008 | Tutor edits a free slot and deletes a slot on `/my-slots` | Changes saved; slot deleted | `slots.spec.js` | Not run |
-| TC-UX-01 | P2P-NF-004 | axe WCAG 2.1 AA scan at 1280 px and 360 px, and a keyboard-only booking flow | No serious violations; booking possible by keyboard | `a11y.spec.js` | Not run |
+| TC-AUTH-01 | P2P-F-001 | Register with a new email, then again with the same email | First succeeds; second rejected | `auth.spec.js` | Passed |
+| TC-AUTH-03 | P2P-F-003 | Login with a wrong password | Error shown, no token stored | `auth.spec.js` | Passed |
+| TC-CAL-02 | P2P-F-010 | Calendar filter subject = DBMS | Only DBMS slots shown | `calendar.spec.js` | Passed |
+| TC-UX-02 | P2P-NF-005 | New user books from the calendar | Confirmed booking in 3 clicks or fewer | `calendar.spec.js` | Passed (2 clicks) |
+| TC-BOOK-01 | P2P-F-012 | Learner books a free slot in the browser | Appears in My bookings; slot shows booked | `booking.spec.js` | Passed |
+| TC-BOOK-05 | P2P-F-016 | Learner cancels a booking more than 2 h away in the browser | Booking removed; slot free again | `booking.spec.js` | Passed |
+| TC-SLOT-02 | P2P-F-006 | Tutor creates weekly recurring slots (4 weeks) on `/my-slots` | 4 slots appear | `slots.spec.js` | Passed |
+| TC-SLOT-04 | P2P-F-008 | Tutor edits a free slot and deletes a slot on `/my-slots` | Changes saved; slot deleted | `slots.spec.js` | Passed |
+| TC-UX-01 | P2P-NF-004 | axe WCAG 2.1 AA scan at 1280 px and 360 px, and a keyboard-only booking flow | No serious violations; booking possible by keyboard | `a11y.spec.js` | Partial: /calendar and /my-slots have contrast problems (6 of 8 pages clean; `System_Validation_Report.md` section 4) |
 
 ### Performance test (k6)
 
 | TC ID | Req ID | What it checks | Expected result | File | Status |
 |---|---|---|---|---|---|
-| TC-PERF-01 | P2P-NF-001 | 100 virtual users for 5 minutes; mix of slot browsing, tutor list, my bookings and booking attempts | p95 under 500 ms, error rate under 1% | `perf/booking-load.js` | Not run |
+| TC-PERF-01 | P2P-NF-001 | 100 virtual users for 5 minutes; mix of slot browsing, tutor list, my bookings and booking attempts | p95 under 500 ms, error rate under 1% | `perf/booking-load.js` | Passed: p95 39.52 ms, 0.00% failed. Note: most booking requests in the test were rate-limited, so the booking path was not measured (`System_Validation_Report.md` section 3) |
 
 ### Staging smoke script (no TC ID)
 
@@ -105,28 +106,28 @@ The STP sample table has no IDs for these tests. They exist in the code without 
 
 ## (c) Requirements Traceability Matrix
 
-Modules follow the SRS RTM and the folders in this repository. "Passed" means the Jest test passed in the run in section 0.
+Modules follow the SRS RTM and the folders in this repository. "Passed (Jest)" means the Jest test passed in the run in section 0. "Passed (e2e)" and the k6 result come from the PTS-44 runs, not from that Jest run.
 
 ### Functional requirements
 
 | Req ID | Requirement | Module | Test case(s) | Status |
 |---|---|---|---|---|
-| P2P-F-001 | Register | Auth Service | TC-AUTH-01 (Jest); TC-AUTH-01 (e2e) | Passed (Jest); e2e Not run |
+| P2P-F-001 | Register | Auth Service | TC-AUTH-01 (Jest); TC-AUTH-01 (e2e) | Passed (Jest); Passed (e2e) |
 | P2P-F-002 | Email verification before booking | Auth Service | TC-AUTH-02 | Passed |
-| P2P-F-003 | Login with JWT | Auth Service | TC-AUTH-03 (Jest); TC-AUTH-03 (e2e) | Passed (Jest); e2e Not run |
+| P2P-F-003 | Login with JWT | Auth Service | TC-AUTH-03 (Jest); TC-AUTH-03 (e2e) | Passed (Jest); Passed (e2e) |
 | P2P-F-004 | Enable tutor role, subjects and bio | Auth Service | TC-PROF-01 | Passed |
 | P2P-F-005 | Create slot | Slot Service | TC-SLOT-01 (no test with this ID); creation is covered inside TC-SLOT-02 tests | Passed (as TC-SLOT-02) |
-| P2P-F-006 | Weekly recurring slots, up to 8 weeks | Slot Service | TC-SLOT-02 (Jest); TC-SLOT-02 (e2e) | Passed (Jest); e2e Not run |
+| P2P-F-006 | Weekly recurring slots, up to 8 weeks | Slot Service | TC-SLOT-02 (Jest); TC-SLOT-02 (e2e) | Passed (Jest); Passed (e2e) |
 | P2P-F-007 | No overlapping tutor slots | Slot Service | TC-SLOT-03 (no test with this ID); covered by overlap tests labelled TC-SLOT-02 | Passed (as TC-SLOT-02) |
-| P2P-F-008 | Edit or delete a slot; deleting a booked slot cancels the booking and notifies the learner | Slot Service, Notification Service | TC-SLOT-04 (Jest); TC-SLOT-04 (e2e) | Passed (Jest); e2e Not run |
+| P2P-F-008 | Edit or delete a slot; deleting a booked slot cancels the booking and notifies the learner | Slot Service, Notification Service | TC-SLOT-04 (Jest); TC-SLOT-04 (e2e) | Passed (Jest); Passed (e2e) |
 | P2P-F-009 | Month, week and day calendar views | Calendar UI | TC-CAL-01 (no test). Views exist in `frontend/app/calendar/page.js` | No test |
-| P2P-F-010 | Filter slots by subject, tutor, date range, mode | Calendar UI, Slot Service | TC-CAL-02 (e2e only) | Not run |
+| P2P-F-010 | Filter slots by subject, tutor, date range, mode | Calendar UI, Slot Service | TC-CAL-02 (e2e only) | Partial: e2e subject filter Passed; tutor, date range and mode filters have no test |
 | P2P-F-011 | Own bookings on the calendar in a distinct style | Calendar UI, Booking Service | TC-CAL-03 (API only) | Passed (API); calendar style Not built (deviation 7) |
-| P2P-F-012 | Reserve a free slot | Booking Service | TC-BOOK-01 (Jest); TC-BOOK-01 (e2e) | Passed (Jest); e2e Not run |
+| P2P-F-012 | Reserve a free slot | Booking Service | TC-BOOK-01 (Jest); TC-BOOK-01 (e2e) | Passed (Jest); Passed (e2e) |
 | P2P-F-013 | Concurrency-safe booking | Booking Service | TC-BOOK-02 | Passed |
 | P2P-F-014 | Learner overlap check | Booking Service | TC-BOOK-03 | Passed |
 | P2P-F-015 | Up to 3 alternative slots on conflict | Booking Service, Calendar UI | TC-BOOK-04 | Passed |
-| P2P-F-016 | Cancel up to 2 h before start | Booking Service | TC-BOOK-05 (Jest); TC-BOOK-05 (e2e) | Passed (Jest); e2e Not run. "Both parties notified" Not built (deviation 6) |
+| P2P-F-016 | Cancel up to 2 h before start | Booking Service | TC-BOOK-05 (Jest); TC-BOOK-05 (e2e) | Passed (Jest); Passed (e2e). "Both parties notified" Not built (deviation 6) |
 | P2P-F-017 | Reschedule atomically | Booking Service | TC-BOOK-06 | Passed |
 | P2P-F-018 | Block booking own slot | Booking Service | TC-BOOK-07 | Passed |
 | P2P-F-019 | Confirmation email to tutor and learner | Notification Service | TC-NOTIF-01 | Passed (mailer mocked; 1-minute delivery not measured) |
@@ -140,11 +141,11 @@ Modules follow the SRS RTM and the folders in this repository. "Passed" means th
 
 | Req ID | Requirement | Module | Test case(s) | Status |
 |---|---|---|---|---|
-| P2P-NF-001 | p95 under 500 ms at 100 users | API / DB | TC-PERF-01 (`perf/booking-load.js`) | Not run |
+| P2P-NF-001 | p95 under 500 ms at 100 users | API / DB | TC-PERF-01 (`perf/booking-load.js`) | Passed (k6): p95 39.52 ms; most booking requests were rate-limited, so the booking path is not measured |
 | P2P-NF-002 | Calendar first paint under 2 s | Frontend | TC-PERF-02 | No test |
 | P2P-NF-003 | Reminder jobs survive restarts | Job Queue | TC-REL-01 | No test |
-| P2P-NF-004 | Responsive UI and WCAG 2.1 AA | Frontend | TC-UX-01 (`a11y.spec.js`) | Not run |
-| P2P-NF-005 | First booking in 3 clicks or fewer | Calendar UI | TC-UX-02 (`calendar.spec.js`) | Not run |
+| P2P-NF-004 | Responsive UI and WCAG 2.1 AA | Frontend | TC-UX-01 (`a11y.spec.js`) | Partial: /calendar and /my-slots have contrast problems |
+| P2P-NF-005 | First booking in 3 clicks or fewer | Calendar UI | TC-UX-02 (`calendar.spec.js`) | Passed (2 clicks) |
 | P2P-NF-006 | 70% backend coverage and zero lint errors | CI | TC-CI-01 (no test with this ID; measured in CI run) | Passed: 89.47% statements, lint 0 errors (threshold not enforced, deviation 12) |
 | P2P-NF-007 | Runs with one `docker compose up` on any OS | Docker | TC-PORT-01 | Not verified (`docker-compose.yml` exists; not run on 3 operating systems) |
 
@@ -179,7 +180,7 @@ Each item is verified in the code unless marked otherwise.
 12. **The 70% coverage target is not enforced in CI** (SRS P2P-NF-006). CI runs `npm test -- --coverage` but `backend/package.json` has no `coverageThreshold`. The measured value is 89.47% statements.
 13. **No secret-scanning step in CI** (STP TC-SEC-06). `ci.yml` has no such job.
 14. **CI additions not in the STP:** `npm audit --audit-level=high` in the backend job, and a `smoke-staging` job that runs on pushes to `main` and manual runs.
-15. **E2E and k6 tests are not part of CI.** No job in `ci.yml` runs the Playwright or k6 tests, so they were **Not run** here.
+15. **E2E and k6 tests are not part of CI.** No job in `ci.yml` runs the Playwright or k6 tests, so they are run by hand. Their results (PTS-44) are recorded in `System_Validation_Report.md`.
 16. **Email delivery is tested with a mocked mailer**, not a Mailtrap sandbox inbox, and the "within 1 minute" target (P2P-F-019) is not measured. Whether Mailtrap is used on staging is **Not verified**.
 17. **Rate limiting uses Redis with an in-memory fallback**, and in-memory counters under test (`backend/src/middleware/rateLimit.js`).
 18. **Known issue, not a code defect:** the `smoke-staging` job fails on pushes to `main` because the staging API on Render does not answer its health check (observed in the GitHub Actions log). Backend and frontend jobs pass in the same runs.
