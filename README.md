@@ -197,6 +197,21 @@ Project documents are in the `docs/` folder:
 - Software Architecture and Design Specification (SAD)
 - Software Test Plan (STP)
 
+## Project Management (Jira)
+
+Screenshots of the Jira project (PTS) are in [`docs/jira`](docs/jira).
+
+| Item | Screenshot |
+|---|---|
+| Jira dashboard | ![Dashboard](docs/jira/01-jira-dashboard.png) |
+| Product backlog | ![Product backlog](docs/jira/02-product-backlog.png) |
+| Sprint 1 backlog | ![Sprint 1 backlog](docs/jira/03-sprint1-backlog.png) |
+| Sprint 2 backlog | ![Sprint 2 backlog](docs/jira/03-sprint2-backlog.png) |
+| Sprint 1 progress | ![Sprint 1 progress](docs/jira/04-sprint1-progress.png) |
+| Sprint 2 progress | ![Sprint 2 progress](docs/jira/04-sprint2-progress.png) |
+| Sprint 1 burndown | ![Sprint 1 burndown](docs/jira/05-sprint1-burndown.png) |
+| Sprint 2 burndown | ![Sprint 2 burndown](docs/jira/05-sprint2-burndown.png) |
+
 ## Team
 
 | Name | Role |
