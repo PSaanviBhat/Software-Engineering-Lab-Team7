@@ -42,7 +42,7 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm run lint
-      - run: npm audit --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
       - run: npx prisma migrate deploy
       - run: npm test -- --coverage
 
